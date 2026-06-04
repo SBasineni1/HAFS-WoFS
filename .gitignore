@@ -1,0 +1,45 @@
+# Large model output data - keep on HPC, don't commit
+*.nc
+*.grb
+*.grb2
+*.grib
+*.grib2
+*.bin
+*.dat
+*.tar
+*.tar.gz
+*.zip
+HFSA/
+HFSB/
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temp outputs
+*.log
+*.tmp
