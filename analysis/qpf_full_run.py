@@ -103,22 +103,23 @@ def discover_files(run_dir, glob, fhours_filter=None):
 # =============================================================================
 
 def load_hafs_precip(filepath):
-    """Return (lats, lons_180, precip_mm) on the native storm-following grid."""
-    CFGRIB_IDX_DIR.mkdir(parents=True, exist_ok=True)
-    idx_path = str(CFGRIB_IDX_DIR / (filepath.name + ".idx"))
-    ds = xr.open_dataset(
-        str(filepath), engine="cfgrib",
-        backend_kwargs={
-            "filter_by_keys": {"shortName": "tp"},
-            "indexpath": idx_path,
-        },
-    )
-    da = ds["tp"]
-    lats = da.latitude.values
-    lons = np.where(da.longitude.values > 180,
-                    da.longitude.values - 360,
-                    da.longitude.values)
-    return lats, lons, da.values
+    """Return (lats, lons_180, precip_mm) on the native storm-following grid.
+
+    cfgrib.open_datasets splits a multi-grid GRIB2 into separate datasets,
+    avoiding the shape-mismatch error that xr.open_dataset causes when it
+    tries to concatenate tp fields from both the parent domain and the
+    storm-following nest.  We take the first dataset that contains tp.
+    """
+    datasets = cfgrib.open_datasets(str(filepath))
+    for ds in datasets:
+        if "tp" in ds.data_vars:
+            da = ds["tp"]
+            lats = da.latitude.values
+            lons = np.where(da.longitude.values > 180,
+                            da.longitude.values - 360,
+                            da.longitude.values)
+            return lats, lons, da.values
+    raise RuntimeError(f"tp not found in {filepath}")
 
 
 def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
