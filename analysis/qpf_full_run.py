@@ -58,7 +58,7 @@ FILE_GLOB = f"**/*{INIT_STR}*storm.atm.f*.grb2"
 
 # Output directory (create it before running, or let the script create it)
 OUT_DIR = Path(
-    "/work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/qpf_frames"
+    "/work2/noaa/aoml-hafs1/suchit/qpf_frames"
 )
 
 # Only process these forecast hours (set to None to process all found)
