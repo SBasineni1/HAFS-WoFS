@@ -12,7 +12,7 @@ Usage (on Hercules login node):
 
 To stitch frames into an MP4 after the script finishes:
     ffmpeg -r 4 -pattern_type glob -i 'output/frames/qpf_frame_*.png' \
-           -vcodec libx264 -crf 22 -pix_fmt yuv420p output/qpf_animation.mp4
+           -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p output/qpf_animation.mp4
 
 Config:
     Edit the CONFIG block below to match your run.
@@ -373,7 +373,7 @@ def main():
     print(f"\nAll frames written to {OUT_DIR}")
     print("\nTo make an MP4:")
     print(f"  ffmpeg -r 4 -pattern_type glob -i '{OUT_DIR}/qpf_frame_*.png' \\")
-    print(f"         -vcodec libx264 -crf 22 -pix_fmt yuv420p {OUT_DIR}/../qpf_animation.mp4")
+    print(f"         -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p {OUT_DIR}/../qpf_animation.mp4")
 
 
 if __name__ == "__main__":
