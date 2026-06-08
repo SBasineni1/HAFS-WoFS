@@ -68,6 +68,9 @@ FHOURS_FILTER = None
 # Local cache directory for downloaded MRMS files (avoids re-downloading)
 MRMS_CACHE_DIR = Path("/tmp/mrms_cache")
 
+# cfgrib index directory — must be writable by you (not the data owner's dir)
+CFGRIB_IDX_DIR = Path("/work2/noaa/aoml-hafs1/suchit/.cfgrib_idx")
+
 # =============================================================================
 
 INIT_DT = datetime.strptime(INIT_STR, "%Y%m%d%H")
@@ -108,7 +111,9 @@ def discover_files(run_dir, glob, fhours_filter=None):
 
 def load_hafs_precip(filepath):
     """Return (lats, lons_180, precip_mm) from a HAFS GRIB2 file."""
-    datasets = cfgrib.open_datasets(str(filepath))
+    CFGRIB_IDX_DIR.mkdir(parents=True, exist_ok=True)
+    indexpath = str(CFGRIB_IDX_DIR / filepath.name) + ".{short_hash}.idx"
+    datasets = cfgrib.open_datasets(str(filepath), indexpath=indexpath)
     for ds in datasets:
         if "tp" in ds.data_vars:
             da = ds["tp"]
