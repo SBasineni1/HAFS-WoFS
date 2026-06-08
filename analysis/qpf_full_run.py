@@ -35,6 +35,7 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 import cfgrib
+import cfgrib.messages as _cfgrib_messages
 import xarray as xr
 import numpy as np
 from scipy.interpolate import griddata
@@ -48,6 +49,21 @@ import cartopy.feature as cfeature
 warnings.filterwarnings("ignore")
 for _log in ["cfgrib", "cfgrib.messages", "cfgrib.xarray_store", "cfgrib.dataset"]:
     logging.getLogger(_log).setLevel(logging.CRITICAL)
+
+# Monkeypatch cfgrib to redirect .idx files to a writable directory.
+# Without this, cfgrib falls back to a slow full-file scan on every open
+# because it can't write the index next to the read-only GRIB2 files.
+_IDX_DIR = Path("/work2/noaa/aoml-hafs1/suchit/.cfgrib_idx")
+_IDX_DIR.mkdir(parents=True, exist_ok=True)
+_orig_from_indexpath = _cfgrib_messages.FileIndex.from_indexpath_or_filestream.__func__
+
+def _patched_from_indexpath(cls, filestream, indexpath, *args, **kwargs):
+    new_path = str(_IDX_DIR / Path(indexpath).name)
+    return _orig_from_indexpath(cls, filestream, new_path, *args, **kwargs)
+
+_cfgrib_messages.FileIndex.from_indexpath_or_filestream = classmethod(
+    _patched_from_indexpath
+)
 
 # =============================================================================
 # CONFIG — edit these for your run
