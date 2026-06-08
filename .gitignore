@@ -40,6 +40,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude
+CLAUDE.md
+
 # Logs and temp outputs
 *.log
 *.tmp
