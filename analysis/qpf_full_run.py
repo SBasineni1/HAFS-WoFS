@@ -1,18 +1,23 @@
 """
 HAFS-A QPF vs MRMS QPE — full-run animation
 
-Runs on Hercules HPC. For each HAFS forecast hour found in the run directory,
-plots accumulated precipitation side-by-side with the matching MRMS MultiSensor
-QPE accumulation, then stitches all frames into an animation.
+HAFS uses a storm-following grid that moves with the TC, so each frame's
+domain shifts.  This script reprojects every HAFS tp field onto a single
+fixed lat/lon grid and keeps a running maximum (np.fmax) so accumulated
+precipitation sticks to the geography as the storm tracks inland.
 
-Usage (on Hercules login node):
-    module load python/3.10  (or whatever your env is)
-    conda activate your_env
+MRMS QPE is accumulated on the same fixed domain, adding one hour at a
+time in sync with the forecast hours being plotted.
+
+Usage (on Hercules):
+    module load miniconda3
+    conda activate hafs
     python analysis/qpf_full_run.py
 
-To stitch frames into an MP4 after the script finishes:
-    ffmpeg -r 4 -pattern_type glob -i 'output/frames/qpf_frame_*.png' \
-           -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p output/qpf_animation.mp4
+To stitch frames into an MP4:
+    ffmpeg -r 4 -pattern_type glob -i '<OUT_DIR>/qpf_frame_*.png' \
+           -vf "format=rgb24" -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p \
+           <OUT_DIR>/../qpf_animation.mp4
 
 Config:
     Edit the CONFIG block below to match your run.
@@ -32,49 +37,33 @@ from botocore.config import Config
 import cfgrib
 import xarray as xr
 import numpy as np
+from scipy.interpolate import griddata
 import matplotlib
-matplotlib.use("Agg")   # non-interactive backend for HPC
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
 warnings.filterwarnings("ignore")
-# cfgrib logs permission errors with exc_info=True when it can't write index
-# files; silence those since we redirect them to our own directory anyway.
 logging.getLogger("cfgrib").setLevel(logging.ERROR)
 
 # =============================================================================
 # CONFIG — edit these for your run
 # =============================================================================
 
-# Root directory of your HAFS run on Hercules
 HAFS_RUN_DIR = Path(
     "/work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSA"
 )
-
-# Init time of the run you want to process
-INIT_STR = "2024092400"   # YYYYMMDDCC
-
-# File pattern to match within the run directory.
-# HAFS naming: {storm}.{init}.hfsa.storm.atm.f{FHR}.grb2
-# Adjust the glob if your files use a different naming convention.
+INIT_STR = "2024092400"
 FILE_GLOB = f"**/*{INIT_STR}*storm.atm.f*.grb2"
-
-# Output directory (create it before running, or let the script create it)
-OUT_DIR = Path(
-    "/work2/noaa/aoml-hafs1/suchit/qpf_frames"
-)
-
-# Only process these forecast hours (set to None to process all found)
-# e.g. FHOURS_FILTER = list(range(6, 127, 6))  to do every 6 hours
+OUT_DIR = Path("/work2/noaa/aoml-hafs1/suchit/qpf_frames")
 FHOURS_FILTER = None
-
-# Local cache directory for downloaded MRMS files (avoids re-downloading)
 MRMS_CACHE_DIR = Path("/tmp/mrms_cache")
-
-# cfgrib index directory — must be writable by you (not the data owner's dir)
 CFGRIB_IDX_DIR = Path("/work2/noaa/aoml-hafs1/suchit/.cfgrib_idx")
+
+# Fixed grid resolution in degrees (~5 km)
+GRID_RES = 0.05
 
 # =============================================================================
 
@@ -95,7 +84,6 @@ QPF_COLORS = [
 # =============================================================================
 
 def parse_fhour(filepath):
-    """Extract integer forecast hour from filename like ...f036.grb2"""
     m = re.search(r"\.f(\d{3})\.grb2$", filepath.name)
     return int(m.group(1)) if m else None
 
@@ -111,16 +99,13 @@ def discover_files(run_dir, glob, fhours_filter=None):
 
 
 # =============================================================================
-# HAFS loader
+# HAFS loader + fixed-grid reprojection
 # =============================================================================
 
 def load_hafs_precip(filepath):
-    """Return (lats, lons_180, precip_mm) from a HAFS GRIB2 file."""
+    """Return (lats, lons_180, precip_mm) on the native storm-following grid."""
     CFGRIB_IDX_DIR.mkdir(parents=True, exist_ok=True)
     idx_path = str(CFGRIB_IDX_DIR / (filepath.name + ".idx"))
-
-    # xr.open_dataset with engine='cfgrib' and backend_kwargs is the only
-    # path where cfgrib actually honours a custom indexpath.
     ds = xr.open_dataset(
         str(filepath), engine="cfgrib",
         backend_kwargs={
@@ -133,8 +118,26 @@ def load_hafs_precip(filepath):
     lons = np.where(da.longitude.values > 180,
                     da.longitude.values - 360,
                     da.longitude.values)
-    # units are kg m-2 = mm
     return lats, lons, da.values
+
+
+def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
+    """
+    Reproject HAFS tp from the moving storm grid onto the fixed lat/lon mesh.
+    Uses nearest-neighbour — fast and sufficient for QPF accumulation plots.
+    Returns NaN outside the storm grid footprint for this frame.
+    """
+    pts = np.column_stack([src_lons.ravel(), src_lats.ravel()])
+    vals = src_data.ravel()
+    valid = np.isfinite(vals) & np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1])
+    if valid.sum() < 4:
+        return np.full(grid_lat.shape, np.nan)
+    return griddata(
+        pts[valid], vals[valid],
+        (grid_lon, grid_lat),
+        method="nearest",
+        fill_value=np.nan,
+    )
 
 
 # =============================================================================
@@ -149,48 +152,21 @@ def mrms_s3_key(hour_end_dt):
 
 
 def load_mrms_hour(s3, hour_end_dt, cache_dir):
-    """
-    Return precipitation (mm) for the 1-hour window ending at hour_end_dt.
-    Downloads from S3 on first call; subsequent calls use the local cache.
-    Returns (lats, lons, data) or raises on failure.
-    """
     key, fname = mrms_s3_key(hour_end_dt)
     cache_path = cache_dir / fname.replace(".gz", "")
-
     if not cache_path.exists():
         gz_buf = io.BytesIO()
         s3.download_fileobj(MRMS_BUCKET, key, gz_buf)
         gz_buf.seek(0)
         raw = gzip.decompress(gz_buf.read())
         cache_path.write_bytes(raw)
-
     datasets = cfgrib.open_datasets(str(cache_path))
     for ds in datasets:
         for var in ds.data_vars:
             da = ds[var]
-            data = da.values
-            data = np.where(data < 0, 0.0, data)   # replace fill values
+            data = np.where(da.values < 0, 0.0, da.values)
             return da.latitude.values, da.longitude.values, data
-
     raise RuntimeError(f"No variable in {cache_path}")
-
-
-def accumulate_mrms(s3, init_dt, n_hours, cache_dir):
-    """
-    Sum n_hours of MRMS 1H QPE (hours 1..n_hours after init_dt).
-    Returns (lats, lons, total_mm).  Missing hours are skipped (treated as 0).
-    """
-    total = lats = lons = None
-    for h in range(1, n_hours + 1):
-        t = init_dt + timedelta(hours=h)
-        try:
-            lat, lon, data = load_mrms_hour(s3, t, cache_dir)
-            if total is None:
-                lats, lons, total = lat, lon, np.zeros_like(data)
-            total += data
-        except Exception as e:
-            print(f"    MRMS h{h:03d} ({t.strftime('%Y-%m-%d %HZ')}) skipped: {e}")
-    return lats, lons, total
 
 
 def crop_to_domain(lats, lons, data, lat_min, lat_max, lon_min, lon_max):
@@ -215,20 +191,17 @@ def qpf_cmap():
     return cmap, norm
 
 
-def plot_frame(fhour, hafs_lats, hafs_lons, hafs_mm,
-               mrms_lats, mrms_lons, mrms_mm, out_path):
+def plot_frame(fhour, fixed_lons, fixed_lats, hafs_mm,
+               mrms_lons, mrms_lats, mrms_mm,
+               full_domain, out_path):
     valid_dt = INIT_DT + timedelta(hours=fhour)
-    lat_min = np.nanmin(hafs_lats) - 0.5
-    lat_max = np.nanmax(hafs_lats) + 0.5
-    lon_min = np.nanmin(hafs_lons) - 0.5
-    lon_max = np.nanmax(hafs_lons) + 0.5
-
+    lat_min, lat_max, lon_min, lon_max = full_domain
     cmap, norm = qpf_cmap()
+
     fig, axes = plt.subplots(
         1, 2, figsize=(16, 7),
         subplot_kw={"projection": ccrs.PlateCarree()},
     )
-
     for ax in axes:
         ax.set_extent([lon_min, lon_max, lat_min, lat_max],
                       crs=ccrs.PlateCarree())
@@ -239,9 +212,9 @@ def plot_frame(fhour, hafs_lats, hafs_lons, hafs_mm,
                           linestyle="--", alpha=0.5)
         gl.top_labels = gl.right_labels = False
 
-    # HAFS panel
+    # HAFS — running accumulated total on fixed grid
     cf = axes[0].contourf(
-        hafs_lons, hafs_lats, hafs_mm,
+        fixed_lons, fixed_lats, hafs_mm,
         levels=QPF_LEVELS, cmap=cmap, norm=norm,
         transform=ccrs.PlateCarree(), extend="max",
     )
@@ -251,7 +224,7 @@ def plot_frame(fhour, hafs_lats, hafs_lons, hafs_mm,
         f"F{fhour:03d} (0–{fhour}h, valid {valid_dt.strftime('%Y-%m-%d %HZ')})"
     )
 
-    # MRMS panel
+    # MRMS
     if mrms_mm is not None:
         axes[1].contourf(
             mrms_lons, mrms_lats, mrms_mm,
@@ -275,7 +248,6 @@ def plot_frame(fhour, hafs_lats, hafs_lons, hafs_mm,
         f"F{fhour:03d} ending {valid_dt.strftime('%Y-%m-%d %HZ')}",
         fontsize=13, y=1.01,
     )
-
     plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -292,88 +264,126 @@ def main():
     print(f"Init time    : {INIT_DT.strftime('%Y-%m-%d %HZ')}")
     print(f"Output dir   : {OUT_DIR}")
 
-    # --- discover HAFS files ---
     file_pairs = discover_files(HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER)
     if not file_pairs:
         print(f"\nNo files found matching {FILE_GLOB} in {HAFS_RUN_DIR}")
-        print("Check FILE_GLOB or HAFS_RUN_DIR in the CONFIG block.")
         return
-    print(f"\nFound {len(file_pairs)} HAFS files:")
-    for h, f in file_pairs:
-        print(f"  F{h:03d}  {f.name}")
-
+    print(f"\nFound {len(file_pairs)} HAFS files")
     max_fhour = file_pairs[-1][0]
-    valid_end = INIT_DT + timedelta(hours=max_fhour)
 
-    # --- pre-download all needed MRMS 1H files up front ---
+    # ------------------------------------------------------------------
+    # First pass: scan all files to find the union lat/lon extent so we
+    # can build one fixed grid that covers the entire TC track.
+    # ------------------------------------------------------------------
+    print("\nFirst pass: scanning all HAFS files for full domain extent ...")
+    lat_min_all, lat_max_all = 90.0, -90.0
+    lon_min_all, lon_max_all = 180.0, -180.0
+    for fhour, filepath in file_pairs:
+        try:
+            lats, lons, _ = load_hafs_precip(filepath)
+            lat_min_all = min(lat_min_all, float(np.nanmin(lats)))
+            lat_max_all = max(lat_max_all, float(np.nanmax(lats)))
+            lon_min_all = min(lon_min_all, float(np.nanmin(lons)))
+            lon_max_all = max(lon_max_all, float(np.nanmax(lons)))
+        except Exception as e:
+            print(f"  F{fhour:03d} scan failed: {e}")
+    lat_min_all -= 0.5
+    lat_max_all += 0.5
+    lon_min_all -= 0.5
+    lon_max_all += 0.5
+    full_domain = (lat_min_all, lat_max_all, lon_min_all, lon_max_all)
+    print(f"  Full domain : lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
+          f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
+
+    fixed_lons = np.arange(lon_min_all, lon_max_all + GRID_RES, GRID_RES)
+    fixed_lats = np.arange(lat_min_all, lat_max_all + GRID_RES, GRID_RES)
+    grid_lon, grid_lat = np.meshgrid(fixed_lons, fixed_lats)
+    print(f"  Fixed grid  : {grid_lat.shape[0]}×{grid_lat.shape[1]} "
+          f"at {GRID_RES}° resolution")
+
+    # ------------------------------------------------------------------
+    # Pre-download all MRMS 1H files and crop to the fixed domain.
+    # ------------------------------------------------------------------
+    valid_end = INIT_DT + timedelta(hours=max_fhour)
     print(f"\nPre-caching MRMS 1H QPE: hours 1–{max_fhour} "
           f"(up to {valid_end.strftime('%Y-%m-%d %HZ')}) ...")
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
-    mrms_hourly = {}   # {hour_int: (lats, lons, data)}  — in-memory cache
+    mrms_hourly = {}
     for h in range(1, max_fhour + 1):
         t = INIT_DT + timedelta(hours=h)
         try:
             lat, lon, data = load_mrms_hour(s3, t, MRMS_CACHE_DIR)
-            mrms_hourly[h] = (lat, lon, data)
+            clat, clon, cdata = crop_to_domain(lat, lon, data,
+                                               lat_min_all, lat_max_all,
+                                               lon_min_all, lon_max_all)
+            mrms_hourly[h] = (clat, clon, cdata)
             if h % 12 == 0 or h == max_fhour:
                 print(f"  cached h{h:03d}/{max_fhour} ({t.strftime('%Y-%m-%d %HZ')})")
         except Exception as e:
             print(f"  h{h:03d} unavailable: {e}")
 
-    # --- process each forecast hour ---
+    mrms_lats = mrms_lons = None
+    for h in sorted(mrms_hourly):
+        mrms_lats, mrms_lons, _ = mrms_hourly[h]
+        break
+
+    # ------------------------------------------------------------------
+    # Second pass: generate frames.
+    # Running state is always updated (even for frames that already exist)
+    # so that later frames have the correct accumulated totals.
+    # ------------------------------------------------------------------
     print(f"\nGenerating {len(file_pairs)} frames ...")
+    hafs_running_max = np.zeros(grid_lat.shape)
+    mrms_running_total = None
+    last_mrms_h = 0
+
     for fhour, filepath in file_pairs:
         out_path = OUT_DIR / f"qpf_frame_{fhour:03d}.png"
+
+        # Update HAFS running max regardless of whether we skip the PNG
+        try:
+            hafs_lats, hafs_lons, hafs_mm = load_hafs_precip(filepath)
+            hafs_interp = regrid_hafs(hafs_lats, hafs_lons, hafs_mm,
+                                      grid_lat, grid_lon)
+            # tp is cumulative from init; fmax stamps the latest value at
+            # each fixed grid point as the storm grid sweeps over it.
+            hafs_running_max = np.fmax(hafs_running_max,
+                                       np.nan_to_num(hafs_interp, nan=0.0))
+        except Exception as e:
+            print(f"  F{fhour:03d} HAFS load failed: {e}")
+            continue
+
+        # Add MRMS hours from where we left off up to this forecast hour
+        for h in range(last_mrms_h + 1, fhour + 1):
+            if h in mrms_hourly:
+                _, _, data = mrms_hourly[h]
+                if mrms_running_total is None:
+                    mrms_running_total = np.zeros_like(data)
+                mrms_running_total += data
+        last_mrms_h = fhour
+
         if out_path.exists():
             print(f"  F{fhour:03d} — already exists, skipping.")
             continue
 
         print(f"  F{fhour:03d} ({filepath.name}) ...", end=" ", flush=True)
-
-        # Load HAFS
-        try:
-            hafs_lats, hafs_lons, hafs_mm = load_hafs_precip(filepath)
-        except Exception as e:
-            print(f"HAFS load failed: {e}")
-            continue
-
-        domain_pad = 0.5
-        lat_min = np.nanmin(hafs_lats) - domain_pad
-        lat_max = np.nanmax(hafs_lats) + domain_pad
-        lon_min = np.nanmin(hafs_lons) - domain_pad
-        lon_max = np.nanmax(hafs_lons) + domain_pad
-
-        # Accumulate MRMS up to this forecast hour using in-memory cache
-        mrms_lats = mrms_lons = mrms_total = None
-        for h in range(1, fhour + 1):
-            if h not in mrms_hourly:
-                continue
-            lat, lon, data = mrms_hourly[h]
-            if mrms_total is None:
-                mrms_lats, mrms_lons = lat, lon
-                mrms_total = np.zeros_like(data)
-            mrms_total += data
-
-        # Crop MRMS to HAFS domain
-        if mrms_total is not None:
-            mrms_lats, mrms_lons, mrms_cropped = crop_to_domain(
-                mrms_lats, mrms_lons, mrms_total,
-                lat_min, lat_max, lon_min, lon_max,
-            )
-        else:
-            mrms_cropped = None
-
-        plot_frame(fhour, hafs_lats, hafs_lons, hafs_mm,
-                   mrms_lats, mrms_lons, mrms_cropped, out_path)
-        hafs_max = np.nanmax(hafs_mm)
-        mrms_max = np.nanmax(mrms_cropped) if mrms_cropped is not None else float("nan")
+        plot_frame(
+            fhour,
+            fixed_lons, fixed_lats, hafs_running_max,
+            mrms_lons, mrms_lats, mrms_running_total,
+            full_domain, out_path,
+        )
+        hafs_max = float(np.nanmax(hafs_running_max))
+        mrms_max = (float(np.nanmax(mrms_running_total))
+                    if mrms_running_total is not None else float("nan"))
         print(f"saved  (HAFS max {hafs_max:.0f} mm | MRMS max {mrms_max:.0f} mm)")
 
     print(f"\nAll frames written to {OUT_DIR}")
     print("\nTo make an MP4:")
     print(f"  ffmpeg -r 4 -pattern_type glob -i '{OUT_DIR}/qpf_frame_*.png' \\")
-    print(f"         -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p {OUT_DIR}/../qpf_animation.mp4")
+    print(f'         -vf "format=rgb24" -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p '
+          f"{OUT_DIR}/../qpf_animation.mp4")
 
 
 if __name__ == "__main__":
