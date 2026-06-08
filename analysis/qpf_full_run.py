@@ -18,6 +18,7 @@ Config:
     Edit the CONFIG block below to match your run.
 """
 
+import logging
 import re
 import gzip
 import io
@@ -29,6 +30,7 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 import cfgrib
+import xarray as xr
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")   # non-interactive backend for HPC
@@ -38,6 +40,9 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
 warnings.filterwarnings("ignore")
+# cfgrib logs permission errors with exc_info=True when it can't write index
+# files; silence those since we redirect them to our own directory anyway.
+logging.getLogger("cfgrib").setLevel(logging.ERROR)
 
 # =============================================================================
 # CONFIG — edit these for your run
@@ -112,18 +117,24 @@ def discover_files(run_dir, glob, fhours_filter=None):
 def load_hafs_precip(filepath):
     """Return (lats, lons_180, precip_mm) from a HAFS GRIB2 file."""
     CFGRIB_IDX_DIR.mkdir(parents=True, exist_ok=True)
-    indexpath = str(CFGRIB_IDX_DIR / filepath.name) + ".{short_hash}.idx"
-    datasets = cfgrib.open_datasets(str(filepath), indexpath=indexpath)
-    for ds in datasets:
-        if "tp" in ds.data_vars:
-            da = ds["tp"]
-            lats = da.latitude.values
-            lons = np.where(da.longitude.values > 180,
-                            da.longitude.values - 360,
-                            da.longitude.values)
-            # units are kg m-2 = mm
-            return lats, lons, da.values
-    raise RuntimeError(f"tp not found in {filepath}")
+    idx_path = str(CFGRIB_IDX_DIR / (filepath.name + ".idx"))
+
+    # xr.open_dataset with engine='cfgrib' and backend_kwargs is the only
+    # path where cfgrib actually honours a custom indexpath.
+    ds = xr.open_dataset(
+        str(filepath), engine="cfgrib",
+        backend_kwargs={
+            "filter_by_keys": {"shortName": "tp"},
+            "indexpath": idx_path,
+        },
+    )
+    da = ds["tp"]
+    lats = da.latitude.values
+    lons = np.where(da.longitude.values > 180,
+                    da.longitude.values - 360,
+                    da.longitude.values)
+    # units are kg m-2 = mm
+    return lats, lons, da.values
 
 
 # =============================================================================
