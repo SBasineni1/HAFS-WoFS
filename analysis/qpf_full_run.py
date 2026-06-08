@@ -66,6 +66,10 @@ CFGRIB_IDX_DIR = Path("/work2/noaa/aoml-hafs1/suchit/.cfgrib_idx")
 # Fixed grid resolution in degrees (~5 km)
 GRID_RES = 0.05
 
+# Fixed domain covering Helene's full track (Gulf → Appalachians).
+# Set to None to auto-detect from a first pass over all HAFS files (slow).
+FIXED_DOMAIN = (15.0, 42.0, -100.0, -60.0)  # (lat_min, lat_max, lon_min, lon_max)
+
 # =============================================================================
 
 INIT_DT = datetime.strptime(INIT_STR, "%Y%m%d%H")
@@ -274,28 +278,34 @@ def main():
     max_fhour = file_pairs[-1][0]
 
     # ------------------------------------------------------------------
-    # First pass: scan all files to find the union lat/lon extent so we
-    # can build one fixed grid that covers the entire TC track.
+    # Determine fixed domain — use hardcoded value if set, otherwise do
+    # a first pass over all files (slower but automatic).
     # ------------------------------------------------------------------
-    print("\nFirst pass: scanning all HAFS files for full domain extent ...")
-    lat_min_all, lat_max_all = 90.0, -90.0
-    lon_min_all, lon_max_all = 180.0, -180.0
-    for fhour, filepath in file_pairs:
-        try:
-            lats, lons, _ = load_hafs_precip(filepath)
-            lat_min_all = min(lat_min_all, float(np.nanmin(lats)))
-            lat_max_all = max(lat_max_all, float(np.nanmax(lats)))
-            lon_min_all = min(lon_min_all, float(np.nanmin(lons)))
-            lon_max_all = max(lon_max_all, float(np.nanmax(lons)))
-        except Exception as e:
-            print(f"  F{fhour:03d} scan failed: {e}")
-    lat_min_all -= 0.5
-    lat_max_all += 0.5
-    lon_min_all -= 0.5
-    lon_max_all += 0.5
-    full_domain = (lat_min_all, lat_max_all, lon_min_all, lon_max_all)
-    print(f"  Full domain : lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
-          f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
+    if FIXED_DOMAIN is not None:
+        full_domain = FIXED_DOMAIN
+        lat_min_all, lat_max_all, lon_min_all, lon_max_all = full_domain
+        print(f"\nUsing hardcoded domain: lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
+              f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
+    else:
+        print("\nFirst pass: scanning all HAFS files for full domain extent ...")
+        lat_min_all, lat_max_all = 90.0, -90.0
+        lon_min_all, lon_max_all = 180.0, -180.0
+        for fhour, filepath in file_pairs:
+            try:
+                lats, lons, _ = load_hafs_precip(filepath)
+                lat_min_all = min(lat_min_all, float(np.nanmin(lats)))
+                lat_max_all = max(lat_max_all, float(np.nanmax(lats)))
+                lon_min_all = min(lon_min_all, float(np.nanmin(lons)))
+                lon_max_all = max(lon_max_all, float(np.nanmax(lons)))
+            except Exception as e:
+                print(f"  F{fhour:03d} scan failed: {e}")
+        lat_min_all -= 0.5
+        lat_max_all += 0.5
+        lon_min_all -= 0.5
+        lon_max_all += 0.5
+        full_domain = (lat_min_all, lat_max_all, lon_min_all, lon_max_all)
+        print(f"  Full domain : lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
+              f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
 
     fixed_lons = np.arange(lon_min_all, lon_max_all + GRID_RES, GRID_RES)
     fixed_lats = np.arange(lat_min_all, lat_max_all + GRID_RES, GRID_RES)
