@@ -276,7 +276,7 @@ def plot_frame(fhour, hafs_lats, hafs_lons, hafs_mm,
         fontsize=13, y=1.01,
     )
 
-    plt.savefig(out_path, dpi=120, bbox_inches="tight")
+    plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
