@@ -46,7 +46,8 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
 warnings.filterwarnings("ignore")
-logging.getLogger("cfgrib").setLevel(logging.ERROR)
+for _log in ["cfgrib", "cfgrib.messages", "cfgrib.xarray_store", "cfgrib.dataset"]:
+    logging.getLogger(_log).setLevel(logging.CRITICAL)
 
 # =============================================================================
 # CONFIG — edit these for your run
