@@ -78,6 +78,36 @@ INIT_DT = datetime.strptime(INIT_STR, "%Y%m%d%H")
 MRMS_BUCKET = "noaa-mrms-pds"
 MRMS_PRODUCT = "MultiSensor_QPE_01H_Pass2_00.00"
 
+# Helene NHC best track (6-hourly): (datetime, lat, lon)
+# Source: NHC best track AL092024
+TC_TRACK_6H = [
+    (datetime(2024, 9, 24,  0),  16.8, -83.2),
+    (datetime(2024, 9, 24,  6),  17.8, -83.5),
+    (datetime(2024, 9, 24, 12),  19.0, -83.8),
+    (datetime(2024, 9, 24, 18),  20.4, -84.1),
+    (datetime(2024, 9, 25,  0),  21.8, -84.3),
+    (datetime(2024, 9, 25,  6),  23.3, -84.5),
+    (datetime(2024, 9, 25, 12),  24.9, -84.6),
+    (datetime(2024, 9, 25, 18),  26.8, -84.5),
+    (datetime(2024, 9, 26,  0),  28.8, -84.1),
+    (datetime(2024, 9, 26,  6),  30.7, -83.5),
+    (datetime(2024, 9, 26, 12),  32.5, -83.0),
+    (datetime(2024, 9, 26, 18),  34.2, -82.7),
+    (datetime(2024, 9, 27,  0),  35.8, -82.5),
+    (datetime(2024, 9, 27,  6),  37.0, -82.0),
+    (datetime(2024, 9, 27, 12),  38.3, -81.0),
+    (datetime(2024, 9, 27, 18),  39.5, -79.5),
+    (datetime(2024, 9, 28,  0),  40.7, -77.5),
+    (datetime(2024, 9, 28,  6),  41.8, -75.0),
+    (datetime(2024, 9, 28, 12),  42.8, -72.0),
+    (datetime(2024, 9, 28, 18),  43.5, -68.5),
+    (datetime(2024, 9, 29,  0),  44.0, -65.0),
+    (datetime(2024, 9, 29,  6),  44.3, -61.5),
+]
+
+# Only count MRMS QPE within this radius of the TC center (km)
+TC_MASK_RADIUS_KM = 500.0
+
 QPF_LEVELS = [0, 5, 10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500]
 QPF_COLORS = [
     "#ffffff", "#c8f0f0", "#64d2ff", "#3296ff",
@@ -156,8 +186,9 @@ def load_hafs_precip(filepath):
 def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
     """
     Reproject HAFS tp from the moving storm grid onto the fixed lat/lon mesh.
-    Uses nearest-neighbour — fast and sufficient for QPF accumulation plots.
-    Returns NaN outside the storm grid footprint for this frame.
+    Uses linear interpolation which only fills points inside the storm grid
+    convex hull — NaN outside, so no rectangular-edge stripe artifacts when
+    the running max accumulates across frames.
     """
     pts = np.column_stack([src_lons.ravel(), src_lats.ravel()])
     vals = src_data.ravel()
@@ -167,9 +198,48 @@ def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
     return griddata(
         pts[valid], vals[valid],
         (grid_lon, grid_lat),
-        method="nearest",
+        method="linear",
         fill_value=np.nan,
     )
+
+
+# =============================================================================
+# TC track interpolation + MRMS mask
+# =============================================================================
+
+def tc_position_at(valid_dt):
+    """Linearly interpolate Helene's best track to any hour."""
+    times = [t for t, _, _ in TC_TRACK_6H]
+    lats  = [la for _, la, _ in TC_TRACK_6H]
+    lons  = [lo for _, _, lo in TC_TRACK_6H]
+    if valid_dt <= times[0]:
+        return lats[0], lons[0]
+    if valid_dt >= times[-1]:
+        return lats[-1], lons[-1]
+    for i in range(len(times) - 1):
+        if times[i] <= valid_dt <= times[i + 1]:
+            frac = (valid_dt - times[i]).total_seconds() / \
+                   (times[i + 1] - times[i]).total_seconds()
+            return lats[i] + frac * (lats[i+1] - lats[i]), \
+                   lons[i] + frac * (lons[i+1] - lons[i])
+    return lats[-1], lons[-1]
+
+
+def haversine_km(lat1, lon1, lat2_arr, lon2_arr):
+    """Great-circle distance (km) from (lat1,lon1) to each point in arrays."""
+    R = 6371.0
+    dlat = np.radians(lat2_arr - lat1)
+    dlon = np.radians(lon2_arr - lon1)
+    a = np.sin(dlat / 2)**2 + np.cos(np.radians(lat1)) * \
+        np.cos(np.radians(lat2_arr)) * np.sin(dlon / 2)**2
+    return R * 2 * np.arcsin(np.sqrt(a))
+
+
+def apply_tc_mask(lats, lons, data, valid_dt):
+    """Zero out MRMS QPE beyond TC_MASK_RADIUS_KM from the TC center."""
+    tc_lat, tc_lon = tc_position_at(valid_dt)
+    dist = haversine_km(tc_lat, tc_lon, lats, lons)
+    return np.where(dist <= TC_MASK_RADIUS_KM, data, 0.0)
 
 
 # =============================================================================
@@ -392,10 +462,14 @@ def main():
             print(f"  F{fhour:03d} HAFS load failed: {e}")
             continue
 
-        # Add MRMS hours from where we left off up to this forecast hour
+        # Add MRMS hours from where we left off up to this forecast hour.
+        # Apply TC-centric mask to each hour so non-Helene synoptic rainfall
+        # outside TC_MASK_RADIUS_KM is excluded from the accumulation.
         for h in range(last_mrms_h + 1, fhour + 1):
             if h in mrms_hourly:
-                _, _, data = mrms_hourly[h]
+                clat, clon, data = mrms_hourly[h]
+                valid_dt_h = INIT_DT + timedelta(hours=h)
+                data = apply_tc_mask(clat, clon, data, valid_dt_h)
                 if mrms_running_total is None:
                     mrms_running_total = np.zeros_like(data)
                 mrms_running_total += data
