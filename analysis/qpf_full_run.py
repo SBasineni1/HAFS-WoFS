@@ -238,7 +238,12 @@ def haversine_km(lat1, lon1, lat2_arr, lon2_arr):
 def apply_tc_mask(lats, lons, data, valid_dt):
     """Zero out MRMS QPE beyond TC_MASK_RADIUS_KM from the TC center."""
     tc_lat, tc_lon = tc_position_at(valid_dt)
-    dist = haversine_km(tc_lat, tc_lon, lats, lons)
+    # MRMS arrives as 1-D lat/lon vectors; HAFS as 2-D arrays.
+    if lats.ndim == 1 and lons.ndim == 1:
+        lons_2d, lats_2d = np.meshgrid(lons, lats)
+    else:
+        lats_2d, lons_2d = lats, lons
+    dist = haversine_km(tc_lat, tc_lon, lats_2d, lons_2d)
     return np.where(dist <= TC_MASK_RADIUS_KM, data, 0.0)
 
 
