@@ -58,13 +58,16 @@ _IDX_DIR.mkdir(parents=True, exist_ok=True)
 _orig_from_indexpath = _cfgrib_messages.FileIndex.from_indexpath_or_filestream.__func__
 
 def _patched_from_indexpath(cls, filestream, *args, **kwargs):
-    # indexpath may arrive as a positional arg or keyword arg depending on
-    # the cfgrib call site — handle both to avoid "multiple values" errors.
+    # indexpath may arrive as positional or keyword, and may be a list
+    # (some cfgrib versions support multiple index paths).
     if args:
         indexpath, rest = args[0], args[1:]
     else:
         indexpath, rest = kwargs.pop("indexpath", ""), ()
-    new_path = str(_IDX_DIR / Path(indexpath).name)
+    if isinstance(indexpath, list):
+        new_path = [str(_IDX_DIR / Path(p).name) for p in indexpath]
+    else:
+        new_path = str(_IDX_DIR / Path(indexpath).name)
     return _orig_from_indexpath(cls, filestream, new_path, *rest, **kwargs)
 
 _cfgrib_messages.FileIndex.from_indexpath_or_filestream = classmethod(
