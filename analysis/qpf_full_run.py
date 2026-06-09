@@ -147,6 +147,7 @@ def load_hafs_precip(filepath):
     (parent + storm nest) because it tries to concatenate them without an
     index file.  eccodes has no such requirement.
     """
+    candidates = []  # (n_points, lats_2d, lons_180, data)
     with open(str(filepath), "rb") as fh:
         while True:
             gid = eccodes.codes_grib_new_from_file(fh)
@@ -171,16 +172,21 @@ def load_hafs_precip(filepath):
                 lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
                 lons_180 = np.where(lons_2d > 180, lons_2d - 360, lons_2d)
                 data = vals.reshape(nj, ni)
-                # Replace GRIB2 fill/missing values with NaN
                 missing = eccodes.codes_get(gid, "missingValue")
                 data = np.where(np.abs(data - missing) < 1.0, np.nan, data)
                 data = np.where(data < 0, np.nan, data)
-                return lats_2d, lons_180, data
+                candidates.append((ni * nj, lats_2d, lons_180, data))
             except Exception:
                 pass
             finally:
                 eccodes.codes_release(gid)
-    raise RuntimeError(f"tp not found in {filepath}")
+    if not candidates:
+        raise RuntimeError(f"tp not found in {filepath}")
+    # Pick the storm-following nest: it has the finest resolution so the
+    # most grid points for its geographic extent.
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _, lats_2d, lons_180, data = candidates[0]
+    return lats_2d, lons_180, data
 
 
 def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
