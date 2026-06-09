@@ -34,6 +34,7 @@ from datetime import datetime, timedelta
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
+import eccodes
 import cfgrib
 import xarray as xr
 import numpy as np
@@ -109,22 +110,41 @@ def discover_files(run_dir, glob, fhours_filter=None):
 # =============================================================================
 
 def load_hafs_precip(filepath):
-    """Return (lats, lons_180, precip_mm) on the native storm-following grid.
+    """Return (lats_2d, lons_2d_180, precip_mm) from a HAFS GRIB2 file.
 
-    cfgrib.open_datasets splits a multi-grid GRIB2 into separate datasets,
-    avoiding the shape-mismatch error that xr.open_dataset causes when it
-    tries to concatenate tp fields from both the parent domain and the
-    storm-following nest.  We take the first dataset that contains tp.
+    Reads directly via eccodes rather than cfgrib so we can pick messages
+    one at a time.  cfgrib fails when the file has tp on two different grids
+    (parent + storm nest) because it tries to concatenate them without an
+    index file.  eccodes has no such requirement.
     """
-    datasets = cfgrib.open_datasets(str(filepath))
-    for ds in datasets:
-        if "tp" in ds.data_vars:
-            da = ds["tp"]
-            lats = da.latitude.values
-            lons = np.where(da.longitude.values > 180,
-                            da.longitude.values - 360,
-                            da.longitude.values)
-            return lats, lons, da.values
+    with open(str(filepath), "rb") as fh:
+        while True:
+            gid = eccodes.codes_grib_new_from_file(fh)
+            if gid is None:
+                break
+            try:
+                try:
+                    sn = eccodes.codes_get(gid, "shortName", ktype=str)
+                except Exception:
+                    continue
+                if sn != "tp":
+                    continue
+                nj = eccodes.codes_get(gid, "Nj")
+                ni = eccodes.codes_get(gid, "Ni")
+                lat0 = eccodes.codes_get(gid, "latitudeOfFirstGridPointInDegrees")
+                lon0 = eccodes.codes_get(gid, "longitudeOfFirstGridPointInDegrees")
+                lat1 = eccodes.codes_get(gid, "latitudeOfLastGridPointInDegrees")
+                lon1 = eccodes.codes_get(gid, "longitudeOfLastGridPointInDegrees")
+                vals = eccodes.codes_get_values(gid)
+                lats_1d = np.linspace(lat0, lat1, nj)
+                lons_1d = np.linspace(lon0, lon1, ni)
+                lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
+                lons_180 = np.where(lons_2d > 180, lons_2d - 360, lons_2d)
+                return lats_2d, lons_180, vals.reshape(nj, ni)
+            except Exception:
+                pass
+            finally:
+                eccodes.codes_release(gid)
     raise RuntimeError(f"tp not found in {filepath}")
 
 
