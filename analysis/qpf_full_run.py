@@ -140,7 +140,12 @@ def load_hafs_precip(filepath):
                 lons_1d = np.linspace(lon0, lon1, ni)
                 lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
                 lons_180 = np.where(lons_2d > 180, lons_2d - 360, lons_2d)
-                return lats_2d, lons_180, vals.reshape(nj, ni)
+                data = vals.reshape(nj, ni)
+                # Replace GRIB2 fill/missing values with NaN
+                missing = eccodes.codes_get(gid, "missingValue")
+                data = np.where(np.abs(data - missing) < 1.0, np.nan, data)
+                data = np.where(data < 0, np.nan, data)
+                return lats_2d, lons_180, data
             except Exception:
                 pass
             finally:
