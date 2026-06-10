@@ -62,7 +62,10 @@ ETS_CSV = OUT_DIR.parent / "ets_helene_hfsa.csv"
 def regrid_mrms_to_fixed(mlat, mlon, mdata, grid_lat, grid_lon):
     """Bilinear-interpolate native MRMS (regular 1-D lat/lon) onto the fixed mesh."""
     mlat = np.asarray(mlat)
-    mlon = np.asarray(mlon)
+    mlon = np.asarray(mlon, dtype=float)
+    # cfgrib returns MRMS longitude in 0–360; the fixed grid (and HAFS) use
+    # −180…180, so convert or every query falls outside the interpolator.
+    mlon = np.where(mlon > 180, mlon - 360, mlon)
     # RegularGridInterpolator needs strictly ascending axes.
     if mlat[0] > mlat[-1]:
         mlat = mlat[::-1]
@@ -172,6 +175,11 @@ def main():
     n_valid = int(np.sum(valid))
     print(f"  Verification points: {n_valid:,} "
           f"({100*n_valid/swath.size:.1f}% of grid)")
+    if n_valid == 0:
+        print("  Swath points:", int(np.sum(swath)),
+              "| finite MRMS points:", int(np.sum(np.isfinite(mrms_total))))
+        print("  No overlapping valid points — check MRMS lon/lat alignment.")
+        return
 
     fcst = np.nan_to_num(hafs_total[valid], nan=0.0)
     obs = np.nan_to_num(mrms_total[valid], nan=0.0)
