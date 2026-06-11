@@ -545,6 +545,14 @@ def main():
     mrms_running_total = None
     last_mrms_h = 0
 
+    # Growing TC swath on the fixed grid (union of 500 km circles along the
+    # track so far).  HAFS is accumulated unmasked but DISPLAYED masked to this
+    # swath, so both panels show only Helene's rain — not predecessor/frontal
+    # precip the large moving nest also contains.  Seed with the init position.
+    hafs_swath = np.zeros(grid_lat.shape, dtype=bool)
+    t0lat, t0lon = tc_position_at(INIT_DT)
+    hafs_swath |= haversine_km(t0lat, t0lon, grid_lat, grid_lon) <= TC_MASK_RADIUS_KM
+
     for fhour, filepath in file_pairs:
         out_path = OUT_DIR / f"qpf_frame_{fhour:03d}.png"
 
@@ -567,13 +575,16 @@ def main():
             print(f"  F{fhour:03d} HAFS load failed: {e}")
             continue
 
-        # Add MRMS hours from where we left off up to this forecast hour.
-        # Apply TC-centric mask to each hour so non-Helene synoptic rainfall
-        # outside TC_MASK_RADIUS_KM is excluded from the accumulation.
+        # Advance the TC swath and accumulate MRMS for the new hours.  The MRMS
+        # mask and the HAFS swath both use the interpolated track position, so
+        # the two panels share an identical Helene-only footprint.
         for h in range(last_mrms_h + 1, fhour + 1):
+            valid_dt_h = INIT_DT + timedelta(hours=h)
+            tlat, tlon = tc_position_at(valid_dt_h)
+            hafs_swath |= (haversine_km(tlat, tlon, grid_lat, grid_lon)
+                           <= TC_MASK_RADIUS_KM)
             if h in mrms_hourly:
                 clat, clon, data = mrms_hourly[h]
-                valid_dt_h = INIT_DT + timedelta(hours=h)
                 data = apply_tc_mask(clat, clon, data, valid_dt_h)
                 if mrms_running_total is None:
                     mrms_running_total = np.zeros_like(data)
@@ -584,14 +595,17 @@ def main():
             print(f"  F{fhour:03d} — already exists, skipping.")
             continue
 
+        # Mask HAFS to the swath-so-far for display (accumulation stays unmasked).
+        hafs_display = np.where(hafs_swath, hafs_total, 0.0)
+
         print(f"  F{fhour:03d} ({filepath.name}) ...", end=" ", flush=True)
         plot_frame(
             fhour,
-            fixed_lons, fixed_lats, hafs_total,
+            fixed_lons, fixed_lats, hafs_display,
             mrms_lons, mrms_lats, mrms_running_total,
             full_domain, out_path,
         )
-        hafs_max = float(np.nanmax(hafs_total))
+        hafs_max = float(np.nanmax(hafs_display))
         mrms_max = (float(np.nanmax(mrms_running_total))
                     if mrms_running_total is not None else float("nan"))
         print(f"saved  (HAFS max {hafs_max:.0f} mm | MRMS max {mrms_max:.0f} mm)")
