@@ -205,17 +205,32 @@ def read_hafs_tp_records(filepath):
     return records
 
 
-def pick_storm_nest(records):
-    """Finest-resolution tp record (largest grid = storm-following nest)."""
-    return max(records, key=lambda r: r["npoints"])
+def pick_total_record(records):
+    """Choose the right tp record and report its accumulation mode.
+
+    HAFS storm.atm files carry TWO tp records on the same nest grid: a
+    per-interval bucket (e.g. 123->126h) and the cumulative-from-init total
+    (0->126h).  We want the cumulative total; fmax over frames then builds the
+    full-track accumulation and is robust to a missing frame.  If only buckets
+    exist (other models), fall back to the longest-window bucket + 'incremental'.
+
+    Returns (record, mode) where mode is "cumulative" | "incremental".
+    """
+    finest = max(r["npoints"] for r in records)
+    cand = [r for r in records if r["npoints"] == finest]
+    cumulative = [r for r in cand if r["start_step"] in (0, None)]
+    if cumulative:
+        return max(cumulative, key=lambda r: (r["end_step"] or 0)), "cumulative"
+    return (max(cand, key=lambda r: (r["end_step"] or 0) - (r["start_step"] or 0)),
+            "incremental")
 
 
 def load_hafs_precip(filepath):
-    """Back-compat: (lats_2d, lons_2d_180, precip_mm) for the storm-nest tp record."""
+    """Back-compat: (lats_2d, lons_2d_180, precip_mm) for the cumulative tp record."""
     records = read_hafs_tp_records(filepath)
     if not records:
         raise RuntimeError(f"tp not found in {filepath}")
-    r = pick_storm_nest(records)
+    r, _ = pick_total_record(records)
     return r["lats"], r["lons"], r["data"]
 
 
@@ -239,33 +254,6 @@ def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
     )
 
 
-def detect_apcp_mode(file_pairs):
-    """Decide whether HAFS APCP is cumulative-from-init or per-interval bucket.
-
-    Inspects the LAST forecast hour, where the two are unambiguous:
-      - cumulative  → start_step == 0  (window is 0…fhour)
-      - incremental → start_step  > 0  (window is just the last interval)
-
-    Returns the mode string ("cumulative" | "incremental").
-    """
-    for fhour, fp in reversed(file_pairs):
-        try:
-            recs = read_hafs_tp_records(fp)
-            if not recs:
-                continue
-            r = pick_storm_nest(recs)
-            start = r["start_step"]
-            mode = "cumulative" if start in (0, None) else "incremental"
-            print(f"  APCP accumulation: {mode}  "
-                  f"(F{fhour:03d} window {start}->{r['end_step']}h, "
-                  f"stepType={r['step_type']})")
-            return mode
-        except Exception:
-            continue
-    print("  APCP accumulation: assuming cumulative (could not inspect files)")
-    return "cumulative"
-
-
 def accumulate_hafs_step(running, interp, mode):
     """Fold one frame's regridded tp into the running event total on the fixed grid.
 
@@ -280,28 +268,32 @@ def accumulate_hafs_step(running, interp, mode):
     return np.fmax(running, interp)
 
 
-def hafs_event_total(file_pairs, grid_lat, grid_lon, mode=None, verbose=True):
+def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
     """Full-event accumulated HAFS precip (mm) on the fixed grid.
 
-    Auto-detects cumulative vs incremental APCP unless `mode` is given.
-    Returns (total, mode).
+    Selects the cumulative tp record per frame and folds it in with the right
+    reducer.  Returns (total, mode).
     """
-    if mode is None:
-        mode = detect_apcp_mode(file_pairs)
     total = np.zeros(grid_lat.shape)
+    mode_seen = None
     for fhour, fp in file_pairs:
         try:
             recs = read_hafs_tp_records(fp)
             if not recs:
                 continue
-            r = pick_storm_nest(recs)
+            r, mode = pick_total_record(recs)
         except Exception as e:
             if verbose:
                 print(f"  F{fhour:03d} HAFS read failed: {e}")
             continue
+        if mode_seen is None:
+            mode_seen = mode
+            if verbose:
+                print(f"  APCP record: {mode} "
+                      f"(window {r['start_step']}->{r['end_step']}h)")
         interp = regrid_hafs(r["lats"], r["lons"], r["data"], grid_lat, grid_lon)
         total = accumulate_hafs_step(total, interp, mode)
-    return total, mode
+    return total, (mode_seen or "cumulative")
 
 
 # =============================================================================
@@ -547,11 +539,9 @@ def main():
     # Running state is always updated (even for frames that already exist)
     # so that later frames have the correct accumulated totals.
     # ------------------------------------------------------------------
-    print("\nDetecting HAFS APCP accumulation type ...")
-    apcp_mode = detect_apcp_mode(file_pairs)
-
     print(f"\nGenerating {len(file_pairs)} frames ...")
     hafs_total = np.zeros(grid_lat.shape)
+    mode_seen = None
     mrms_running_total = None
     last_mrms_h = 0
 
@@ -559,13 +549,20 @@ def main():
         out_path = OUT_DIR / f"qpf_frame_{fhour:03d}.png"
 
         # Update the HAFS event total regardless of whether we skip the PNG.
-        # Cumulative APCP -> fmax (latest total as the nest sweeps past);
-        # incremental APCP -> sum the per-interval buckets.
+        # We select the cumulative 0->fhour tp record; fmax stamps the latest
+        # total at each fixed point as the storm nest sweeps past.
         try:
-            hafs_lats, hafs_lons, hafs_mm = load_hafs_precip(filepath)
-            hafs_interp = regrid_hafs(hafs_lats, hafs_lons, hafs_mm,
+            recs = read_hafs_tp_records(filepath)
+            if not recs:
+                raise RuntimeError("no tp records")
+            r, mode = pick_total_record(recs)
+            if mode_seen is None:
+                mode_seen = mode
+                print(f"  APCP record: {mode} "
+                      f"(window {r['start_step']}->{r['end_step']}h)")
+            hafs_interp = regrid_hafs(r["lats"], r["lons"], r["data"],
                                       grid_lat, grid_lon)
-            hafs_total = accumulate_hafs_step(hafs_total, hafs_interp, apcp_mode)
+            hafs_total = accumulate_hafs_step(hafs_total, hafs_interp, mode)
         except Exception as e:
             print(f"  F{fhour:03d} HAFS load failed: {e}")
             continue
