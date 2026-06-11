@@ -48,7 +48,7 @@ from qpf_full_run import (
     HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER, FIXED_DOMAIN, GRID_RES,
     TC_MASK_RADIUS_KM, INIT_DT, OUT_DIR, MRMS_CACHE_DIR,
     MRMS_BUCKET, MRMS_PRODUCT,
-    discover_files, load_hafs_precip, regrid_hafs,
+    discover_files, hafs_event_total,
     tc_position_at, haversine_km, load_mrms_hour,
 )
 
@@ -78,19 +78,6 @@ def regrid_mrms_to_fixed(mlat, mlon, mdata, grid_lat, grid_lon):
     )
     pts = np.column_stack([grid_lat.ravel(), grid_lon.ravel()])
     return interp(pts).reshape(grid_lat.shape)
-
-
-def build_hafs_total(file_pairs, grid_lat, grid_lon):
-    """Running-max storm-total HAFS precip on the fixed grid (mm)."""
-    total = np.zeros(grid_lat.shape)
-    for fhour, fp in file_pairs:
-        try:
-            la, lo, mm = load_hafs_precip(fp)
-            interp = regrid_hafs(la, lo, mm, grid_lat, grid_lon)
-            total = np.fmax(total, np.nan_to_num(interp, nan=0.0))
-        except Exception as e:
-            print(f"  F{fhour:03d} HAFS load failed: {e}")
-    return total
 
 
 def build_mrms_total(max_fhour, grid_lat, grid_lon):
@@ -162,8 +149,9 @@ def main():
     grid_lon, grid_lat = np.meshgrid(fixed_lons, fixed_lats)
     print(f"Fixed grid   : {grid_lat.shape[0]}x{grid_lat.shape[1]} @ {GRID_RES}deg")
 
-    print("\nBuilding HAFS storm-total (running max over forecast hours) ...")
-    hafs_total = build_hafs_total(file_pairs, grid_lat, grid_lon)
+    print("\nBuilding HAFS storm-total (accumulation-aware) ...")
+    hafs_total, apcp_mode = hafs_event_total(file_pairs, grid_lat, grid_lon)
+    print(f"  HAFS APCP mode: {apcp_mode}")
 
     print("\nAccumulating + regridding MRMS QPE ...")
     mrms_total = build_mrms_total(max_fhour, grid_lat, grid_lon)

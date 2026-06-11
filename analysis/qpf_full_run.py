@@ -139,15 +139,18 @@ def discover_files(run_dir, glob, fhours_filter=None):
 # HAFS loader + fixed-grid reprojection
 # =============================================================================
 
-def load_hafs_precip(filepath):
-    """Return (lats_2d, lons_2d_180, precip_mm) from a HAFS GRIB2 file.
+def read_hafs_tp_records(filepath):
+    """Return every APCP/tp record in a HAFS GRIB2 file with grid + accumulation
+    metadata, as a list of dicts.
 
-    Reads directly via eccodes rather than cfgrib so we can pick messages
-    one at a time.  cfgrib fails when the file has tp on two different grids
-    (parent + storm nest) because it tries to concatenate them without an
-    index file.  eccodes has no such requirement.
+    Reads directly via eccodes rather than cfgrib so we can pick messages one
+    at a time.  cfgrib fails when the file has tp on two different grids (parent
+    + storm nest) because it tries to concatenate them without an index file.
+
+    Each dict: npoints, lats, lons (−180…180), data (mm, fill→NaN),
+    start_step, end_step, step_type.
     """
-    candidates = []  # (n_points, lats_2d, lons_180, data)
+    records = []
     with open(str(filepath), "rb") as fh:
         while True:
             gid = eccodes.codes_grib_new_from_file(fh)
@@ -166,6 +169,17 @@ def load_hafs_precip(filepath):
                 lon0 = eccodes.codes_get(gid, "longitudeOfFirstGridPointInDegrees")
                 lat1 = eccodes.codes_get(gid, "latitudeOfLastGridPointInDegrees")
                 lon1 = eccodes.codes_get(gid, "longitudeOfLastGridPointInDegrees")
+
+                def _opt(key, cast=int):
+                    try:
+                        return cast(eccodes.codes_get(gid, key))
+                    except Exception:
+                        return None
+
+                start_step = _opt("startStep")
+                end_step = _opt("endStep")
+                step_type = _opt("stepType", cast=str)
+
                 vals = eccodes.codes_get_values(gid)
                 lats_1d = np.linspace(lat0, lat1, nj)
                 lons_1d = np.linspace(lon0, lon1, ni)
@@ -175,18 +189,34 @@ def load_hafs_precip(filepath):
                 missing = eccodes.codes_get(gid, "missingValue")
                 data = np.where(np.abs(data - missing) < 1.0, np.nan, data)
                 data = np.where(data < 0, np.nan, data)
-                candidates.append((ni * nj, lats_2d, lons_180, data))
+                records.append({
+                    "npoints": ni * nj,
+                    "lats": lats_2d,
+                    "lons": lons_180,
+                    "data": data,
+                    "start_step": start_step,
+                    "end_step": end_step,
+                    "step_type": step_type,
+                })
             except Exception:
                 pass
             finally:
                 eccodes.codes_release(gid)
-    if not candidates:
+    return records
+
+
+def pick_storm_nest(records):
+    """Finest-resolution tp record (largest grid = storm-following nest)."""
+    return max(records, key=lambda r: r["npoints"])
+
+
+def load_hafs_precip(filepath):
+    """Back-compat: (lats_2d, lons_2d_180, precip_mm) for the storm-nest tp record."""
+    records = read_hafs_tp_records(filepath)
+    if not records:
         raise RuntimeError(f"tp not found in {filepath}")
-    # Pick the storm-following nest: it has the finest resolution so the
-    # most grid points for its geographic extent.
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    _, lats_2d, lons_180, data = candidates[0]
-    return lats_2d, lons_180, data
+    r = pick_storm_nest(records)
+    return r["lats"], r["lons"], r["data"]
 
 
 def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
@@ -207,6 +237,71 @@ def regrid_hafs(src_lats, src_lons, src_data, grid_lat, grid_lon):
         method="linear",
         fill_value=np.nan,
     )
+
+
+def detect_apcp_mode(file_pairs):
+    """Decide whether HAFS APCP is cumulative-from-init or per-interval bucket.
+
+    Inspects the LAST forecast hour, where the two are unambiguous:
+      - cumulative  → start_step == 0  (window is 0…fhour)
+      - incremental → start_step  > 0  (window is just the last interval)
+
+    Returns the mode string ("cumulative" | "incremental").
+    """
+    for fhour, fp in reversed(file_pairs):
+        try:
+            recs = read_hafs_tp_records(fp)
+            if not recs:
+                continue
+            r = pick_storm_nest(recs)
+            start = r["start_step"]
+            mode = "cumulative" if start in (0, None) else "incremental"
+            print(f"  APCP accumulation: {mode}  "
+                  f"(F{fhour:03d} window {start}->{r['end_step']}h, "
+                  f"stepType={r['step_type']})")
+            return mode
+        except Exception:
+            continue
+    print("  APCP accumulation: assuming cumulative (could not inspect files)")
+    return "cumulative"
+
+
+def accumulate_hafs_step(running, interp, mode):
+    """Fold one frame's regridded tp into the running event total on the fixed grid.
+
+    - cumulative: tp is monotonic since init, so fmax stamps the latest total
+      at each fixed point as the storm nest sweeps over it.
+    - incremental: each file holds only its own interval's precip, so the
+      increments are summed across forecast hours.
+    """
+    interp = np.nan_to_num(interp, nan=0.0)
+    if mode == "incremental":
+        return running + interp
+    return np.fmax(running, interp)
+
+
+def hafs_event_total(file_pairs, grid_lat, grid_lon, mode=None, verbose=True):
+    """Full-event accumulated HAFS precip (mm) on the fixed grid.
+
+    Auto-detects cumulative vs incremental APCP unless `mode` is given.
+    Returns (total, mode).
+    """
+    if mode is None:
+        mode = detect_apcp_mode(file_pairs)
+    total = np.zeros(grid_lat.shape)
+    for fhour, fp in file_pairs:
+        try:
+            recs = read_hafs_tp_records(fp)
+            if not recs:
+                continue
+            r = pick_storm_nest(recs)
+        except Exception as e:
+            if verbose:
+                print(f"  F{fhour:03d} HAFS read failed: {e}")
+            continue
+        interp = regrid_hafs(r["lats"], r["lons"], r["data"], grid_lat, grid_lon)
+        total = accumulate_hafs_step(total, interp, mode)
+    return total, mode
 
 
 # =============================================================================
@@ -452,23 +547,25 @@ def main():
     # Running state is always updated (even for frames that already exist)
     # so that later frames have the correct accumulated totals.
     # ------------------------------------------------------------------
+    print("\nDetecting HAFS APCP accumulation type ...")
+    apcp_mode = detect_apcp_mode(file_pairs)
+
     print(f"\nGenerating {len(file_pairs)} frames ...")
-    hafs_running_max = np.zeros(grid_lat.shape)
+    hafs_total = np.zeros(grid_lat.shape)
     mrms_running_total = None
     last_mrms_h = 0
 
     for fhour, filepath in file_pairs:
         out_path = OUT_DIR / f"qpf_frame_{fhour:03d}.png"
 
-        # Update HAFS running max regardless of whether we skip the PNG
+        # Update the HAFS event total regardless of whether we skip the PNG.
+        # Cumulative APCP -> fmax (latest total as the nest sweeps past);
+        # incremental APCP -> sum the per-interval buckets.
         try:
             hafs_lats, hafs_lons, hafs_mm = load_hafs_precip(filepath)
             hafs_interp = regrid_hafs(hafs_lats, hafs_lons, hafs_mm,
                                       grid_lat, grid_lon)
-            # tp is cumulative from init; fmax stamps the latest value at
-            # each fixed grid point as the storm grid sweeps over it.
-            hafs_running_max = np.fmax(hafs_running_max,
-                                       np.nan_to_num(hafs_interp, nan=0.0))
+            hafs_total = accumulate_hafs_step(hafs_total, hafs_interp, apcp_mode)
         except Exception as e:
             print(f"  F{fhour:03d} HAFS load failed: {e}")
             continue
@@ -493,11 +590,11 @@ def main():
         print(f"  F{fhour:03d} ({filepath.name}) ...", end=" ", flush=True)
         plot_frame(
             fhour,
-            fixed_lons, fixed_lats, hafs_running_max,
+            fixed_lons, fixed_lats, hafs_total,
             mrms_lons, mrms_lats, mrms_running_total,
             full_domain, out_path,
         )
-        hafs_max = float(np.nanmax(hafs_running_max))
+        hafs_max = float(np.nanmax(hafs_total))
         mrms_max = (float(np.nanmax(mrms_running_total))
                     if mrms_running_total is not None else float("nan"))
         print(f"saved  (HAFS max {hafs_max:.0f} mm | MRMS max {mrms_max:.0f} mm)")
