@@ -43,6 +43,7 @@ import cfgrib
 import xarray as xr
 import numpy as np
 from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -71,6 +72,16 @@ CFGRIB_IDX_DIR = Path("/work2/noaa/aoml-hafs1/suchit/.cfgrib_idx")
 
 # Fixed grid resolution in degrees (~5 km)
 GRID_RES = 0.05
+
+# Eyewall de-scalloping.  With only 3-hourly output, summing each frame's
+# eyewall ring leaves a string of discrete arcs spaced by the storm's 3 h
+# motion.  A light Gaussian smooth (sigma in GRID CELLS, ~5 km each) blends the
+# rings into a continuous swath.  Gaussian smoothing conserves total mass and
+# only lowers peaks, so it cannot reintroduce the old unrealistic extremes.
+# Applied to the DISPLAY field only (the running accumulation stays raw).
+# 0 disables.  ~4-6 blends the scallops; raise for a smoother swath, lower to
+# keep more inner-core detail.
+SMOOTH_SIGMA = 5
 
 # Fixed domain covering Helene's full track (Gulf → Appalachians).
 # Set to None to auto-detect from a first pass over all HAFS files (slow).
@@ -612,8 +623,11 @@ def main():
             print(f"  F{fhour:03d} — already exists, skipping.")
             continue
 
-        # Mask HAFS to the swath-so-far for display (accumulation stays unmasked).
-        hafs_display = np.where(hafs_swath, hafs_total, 0.0)
+        # De-scallop the eyewall rings, then mask HAFS to the swath-so-far for
+        # display (the running accumulation stays raw + unsmoothed).
+        hafs_smooth = (gaussian_filter(hafs_total, SMOOTH_SIGMA)
+                       if SMOOTH_SIGMA else hafs_total)
+        hafs_display = np.where(hafs_swath, hafs_smooth, 0.0)
 
         print(f"  F{fhour:03d} ({filepath.name}) ...", end=" ", flush=True)
         plot_frame(
