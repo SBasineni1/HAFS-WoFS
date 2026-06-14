@@ -2,9 +2,13 @@
 HAFS-A QPF vs MRMS QPE — full-run animation
 
 HAFS uses a storm-following grid that moves with the TC, so each frame's
-domain shifts.  This script reprojects every HAFS tp field onto a single
-fixed lat/lon grid and keeps a running maximum (np.fmax) so accumulated
-precipitation sticks to the geography as the storm tracks inland.
+domain shifts.  The nest's 0->fhour "cumulative" tp is accumulated per grid
+CELL in storm-relative space (a cell under the eyewall racks up rain all run
+long -> impossible ~2400 mm totals), so it is NOT usable for a geographic map.
+Instead this script takes each frame's short per-interval precip BUCKET,
+reprojects it onto a single fixed lat/lon grid at that frame's true position,
+and SUMS the buckets so accumulation sticks to the geography as the storm
+tracks inland.
 
 MRMS QPE is accumulated on the same fixed domain, adding one hour at a
 time in sync with the forecast hours being plotted.
@@ -206,23 +210,31 @@ def read_hafs_tp_records(filepath):
 
 
 def pick_total_record(records):
-    """Choose the right tp record and report its accumulation mode.
+    """Pick the per-interval precip BUCKET from a moving-nest file.
 
-    HAFS storm.atm files carry TWO tp records on the same nest grid: a
-    per-interval bucket (e.g. 123->126h) and the cumulative-from-init total
-    (0->126h).  We want the cumulative total; fmax over frames then builds the
-    full-track accumulation and is robust to a missing frame.  If only buckets
-    exist (other models), fall back to the longest-window bucket + 'incremental'.
+    HAFS storm.atm files carry two tp records on the nest grid: a per-interval
+    bucket (e.g. 60->63h) and a 0->fhour "cumulative" total.  The cumulative
+    record is a TRAP on a storm-following nest: precip accumulates per grid
+    CELL, and a cell that stays under the eyewall racks up rain for the whole
+    run, giving physically impossible 0->126h totals (~2400 mm) in storm-
+    relative space rather than at any fixed point on the ground.
 
-    Returns (record, mode) where mode is "cumulative" | "incremental".
+    The short bucket is geographically valid — over one output step the nest
+    barely moves — so we take the SHORTEST positive window and SUM the buckets
+    (each reprojected to its own lat/lon) across frames to build the true
+    geographic storm total.
+
+    Returns (record, "incremental"), or (None, None) for a zero-length window
+    (e.g. F000) which contributes nothing.
     """
     finest = max(r["npoints"] for r in records)
     cand = [r for r in records if r["npoints"] == finest]
-    cumulative = [r for r in cand if r["start_step"] in (0, None)]
-    if cumulative:
-        return max(cumulative, key=lambda r: (r["end_step"] or 0)), "cumulative"
-    return (max(cand, key=lambda r: (r["end_step"] or 0) - (r["start_step"] or 0)),
-            "incremental")
+    buckets = [r for r in cand
+               if (r["end_step"] or 0) > (r["start_step"] or 0)]
+    if not buckets:
+        return None, None
+    window = lambda r: (r["end_step"] or 0) - (r["start_step"] or 0)
+    return min(buckets, key=window), "incremental"
 
 
 def load_hafs_precip(filepath):
@@ -282,6 +294,8 @@ def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
             if not recs:
                 continue
             r, mode = pick_total_record(recs)
+            if r is None:
+                continue
         except Exception as e:
             if verbose:
                 print(f"  F{fhour:03d} HAFS read failed: {e}")
@@ -564,6 +578,9 @@ def main():
             if not recs:
                 raise RuntimeError("no tp records")
             r, mode = pick_total_record(recs)
+            if r is None:
+                # zero-length window (e.g. F000) — nothing to add.
+                continue
             if mode_seen is None:
                 mode_seen = mode
                 print(f"  APCP record: {mode} "
