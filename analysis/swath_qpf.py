@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
+import eccodes
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -48,7 +49,6 @@ from qpf_full_run import (
     HAFS_RUN_DIR, INIT_STR, INIT_DT, FIXED_DOMAIN,
     TC_MASK_RADIUS_KM, OUT_DIR, MRMS_CACHE_DIR,
     QPF_LEVELS, QPF_COLORS,
-    read_hafs_tp_records,
     tc_position_at, haversine_km, load_mrms_hour, crop_to_domain,
 )
 
@@ -64,13 +64,76 @@ def default_swath_path():
     return hits[0] if hits else None
 
 
-def pick_swath_precip(records):
-    """Pick the whole-run accumulated precip record from the swath file.
+def read_swath_prate_records(filepath):
+    """Read every 'prate' (precipitation rate) record from a HAFS swath file.
 
-    Swath files are on a single fixed grid, so all tp records share npoints.
-    Choose the longest accumulation window (largest end_step - start_step);
-    ties broken toward the cumulative-from-init record (start_step in 0/None).
+    The swath product has NO accumulated tp/APCP field — it stores the
+    time-MEAN precipitation rate over each 0->Nh window (stepType 'avg', units
+    kg m**-2 s**-1).  Total accumulated rainfall over the window is then
+
+        total_mm = avg_rate * window_seconds      (1 kg m**-2 == 1 mm)
+
+    Returns a list of dicts: npoints, lats, lons (-180..180), rate (kg/m2/s,
+    fill->NaN), start_step, end_step, step_type.  Same eccodes plumbing as
+    qpf_full_run.read_hafs_tp_records, just filtered on shortName 'prate'.
     """
+    records = []
+    with open(str(filepath), "rb") as fh:
+        while True:
+            gid = eccodes.codes_grib_new_from_file(fh)
+            if gid is None:
+                break
+            try:
+                try:
+                    sn = eccodes.codes_get(gid, "shortName", ktype=str)
+                except Exception:
+                    continue
+                if sn != "prate":
+                    continue
+                nj = eccodes.codes_get(gid, "Nj")
+                ni = eccodes.codes_get(gid, "Ni")
+                lat0 = eccodes.codes_get(gid, "latitudeOfFirstGridPointInDegrees")
+                lon0 = eccodes.codes_get(gid, "longitudeOfFirstGridPointInDegrees")
+                lat1 = eccodes.codes_get(gid, "latitudeOfLastGridPointInDegrees")
+                lon1 = eccodes.codes_get(gid, "longitudeOfLastGridPointInDegrees")
+
+                def _opt(key, cast=int):
+                    try:
+                        return cast(eccodes.codes_get(gid, key))
+                    except Exception:
+                        return None
+
+                start_step = _opt("startStep")
+                end_step = _opt("endStep")
+                step_type = _opt("stepType", cast=str)
+
+                vals = eccodes.codes_get_values(gid)
+                lats_1d = np.linspace(lat0, lat1, nj)
+                lons_1d = np.linspace(lon0, lon1, ni)
+                lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
+                lons_180 = np.where(lons_2d > 180, lons_2d - 360, lons_2d)
+                rate = vals.reshape(nj, ni)
+                missing = eccodes.codes_get(gid, "missingValue")
+                rate = np.where(np.abs(rate - missing) < 1.0, np.nan, rate)
+                rate = np.where(rate < 0, np.nan, rate)
+                records.append({
+                    "npoints": ni * nj,
+                    "lats": lats_2d,
+                    "lons": lons_180,
+                    "rate": rate,
+                    "start_step": start_step,
+                    "end_step": end_step,
+                    "step_type": step_type,
+                })
+            except Exception:
+                pass
+            finally:
+                eccodes.codes_release(gid)
+    return records
+
+
+def pick_swath_precip(records):
+    """Pick the whole-run prate record (longest 0->Nh averaging window)."""
     if not records:
         return None
 
@@ -168,24 +231,33 @@ def main():
 
     # ------------------------------------------------------------------
     # HAFS native swath precip on the fixed parent grid.
+    # The swath stores time-MEAN precip rate (prate, kg/m2/s) per 0->Nh window,
+    # not accumulated tp.  Total rainfall = avg_rate * window_seconds.
     # ------------------------------------------------------------------
-    records = read_hafs_tp_records(path)
+    records = read_swath_prate_records(path)
     if not records:
-        print("\nNo 'tp' (APCP) records in the swath file.")
+        print("\nNo 'prate' records in the swath file.")
         print("Run  python analysis/inspect_grib.py "
               f"{path}  to list its fields.")
         return
-    print(f"\nFound {len(records)} tp record(s):")
+    print(f"\nFound {len(records)} prate record(s):")
     for i, r in enumerate(records):
+        win_s = ((r["end_step"] or 0) - (r["start_step"] or 0)) * 3600
+        peak_mm = np.nanmax(r["rate"]) * win_s
         print(f"  [{i}] window {r['start_step']}->{r['end_step']}h "
               f"stepType={r['step_type']} npoints={r['npoints']:,} "
-              f"max={np.nanmax(r['data']):.0f} mm")
+              f"max_rate={np.nanmax(r['rate']):.2e} kg/m2/s "
+              f"(~{peak_mm:.0f} mm total)")
 
     rec = pick_swath_precip(records)
     end_fhour = rec["end_step"] or 0
-    hafs_lats, hafs_lons, hafs_mm = rec["lats"], rec["lons"], rec["data"]
-    print(f"\nUsing record: 0->{end_fhour}h, grid {hafs_lats.shape}, "
-          f"max {np.nanmax(hafs_mm):.0f} mm")
+    window_s = ((rec["end_step"] or 0) - (rec["start_step"] or 0)) * 3600
+    hafs_lats, hafs_lons = rec["lats"], rec["lons"]
+    # Convert mean rate over the window to total accumulated rainfall (mm).
+    hafs_mm = rec["rate"] * window_s
+    print(f"\nUsing 0->{end_fhour}h prate record, grid {hafs_lats.shape}, "
+          f"converted to total rainfall max {np.nanmax(hafs_mm):.0f} mm "
+          f"({np.nanmax(hafs_mm)/25.4:.1f} in)")
 
     # TC rainfall swath mask on the HAFS grid (union of 500 km circles along
     # the best track for hours 0..end_fhour) — same idea as the other scripts.
