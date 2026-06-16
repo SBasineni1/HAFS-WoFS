@@ -1,34 +1,38 @@
 """
-HAFS-A PARENT-domain QPF vs MRMS QPE — single static comparison.
+HAFS-A PARENT-domain QPF vs MRMS QPE vs Stage IV QPE — static 3-panel.
 
-This is the field the operational viewers (e.g. Tropical Tidbits' "HAFS-A
-Parent Model — Total Accumulated Precip") actually draw.  The 6-km parent
-domain is FIXED, so its 0->fhour cumulative APCP (tp) accumulates geographically
+The parent panel is the field operational viewers (e.g. Tropical Tidbits'
+"HAFS-A Parent Model — Total Accumulated Precip") draw.  The 6-km parent domain
+is FIXED, so its 0->fhour cumulative APCP (tp) accumulates geographically
 correctly — no moving-nest storm-relative inflation, no bucket-summing, no
-eyewall scallops, and no dependence on storm translation speed.  The whole-run
-storm total is just the cumulative tp in the last forecast-hour file.
+eyewall scallops.  The whole-run storm total is just the cumulative tp in the
+last forecast-hour file.
 
-Contrast:
-  * qpf_full_run.py  -> 2-km moving NEST (storm.atm): high-res but its
-    cumulative tp is storm-relative garbage, so we sum 3-h buckets and still
-    get speed-dependent eyewall arcs.
-  * parent_qpf.py    -> 6-km PARENT (parent.atm): coarser, lower local peaks,
-    but geographically honest and viewer-consistent.
+Two observed-QPE references are shown for comparison of rainfall amounts:
+  * MRMS MultiSensor QPE (Pass2), 1-hourly, from the noaa-mrms-pds S3 bucket.
+  * NCEP Stage IV QPE, 6-hourly, from the NOAA water.noaa.gov daily tarballs.
+    Stage IV is gauge+radar and is the classic verification benchmark; it is
+    CONUS-only, so Helene's Gulf/Caribbean rain won't appear in that panel.
+
+Contrast with qpf_full_run.py (2-km moving NEST: high-res but its cumulative
+tp is storm-relative, so it needs 3-h bucket summing and still scallops with
+storm speed).  The parent domain is coarser (lower peaks) but geographically
+honest and viewer-consistent.
 
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
     python analysis/parent_qpf.py [/path/to/parent.atm.fXXX.grb2]
 
-If no path is given, the highest forecast-hour parent.atm file for the
-configured run is found automatically.  Reuses the GRIB2 / MRMS plumbing from
-qpf_full_run.py.
+Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
 """
 
 import re
 import sys
+import tarfile
+import urllib.request
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 # Make the sibling module importable no matter the cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
+import cfgrib
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -53,6 +58,11 @@ from qpf_full_run import (
 )
 
 PARENT_PNG = OUT_DIR.parent / "parent_qpf_helene_hfsa.png"
+
+# Stage IV QPE — NOAA water.noaa.gov daily source tarballs (GRIB2 since 2020).
+# Each daily tar is valid 12Z->12Z and holds 1h/6h/24h accumulation files.
+STAGE4_BASE = "https://water.noaa.gov/resources/downloads/precip/stageIV"
+STAGE4_CACHE_DIR = Path("/tmp/stage4_cache")
 
 
 # =============================================================================
@@ -88,6 +98,100 @@ def pick_cumulative_record(records):
 
 
 # =============================================================================
+# Stage IV QPE downloader / accumulator
+# =============================================================================
+
+def stage4_tar_url(day):
+    return (f"{STAGE4_BASE}/{day:%Y}/{day:%m}/{day:%d}/"
+            f"ncep_stage_iv_source_files_{day:%Y%m%d}.tar")
+
+
+def ensure_stage4_files(start_dt, end_dt, cache_dir):
+    """Download + extract the daily Stage IV tarballs covering [start, end].
+
+    Tarballs are valid 12Z->12Z, so we fetch from the day BEFORE start through
+    end to be safe.  A per-day marker file makes this idempotent (cached).
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    day = (start_dt - timedelta(days=1)).date()
+    last = end_dt.date()
+    while day <= last:
+        marker = cache_dir / f".{day:%Y%m%d}.done"
+        if not marker.exists():
+            url = stage4_tar_url(day)
+            tar_path = cache_dir / f"st4_{day:%Y%m%d}.tar"
+            try:
+                urllib.request.urlretrieve(url, tar_path)
+                with tarfile.open(tar_path) as tf:
+                    tf.extractall(cache_dir)
+                marker.write_text("ok")
+            except Exception as e:
+                print(f"  Stage IV tar {day} failed: {e}")
+            finally:
+                tar_path.unlink(missing_ok=True)
+        day += timedelta(days=1)
+
+
+def index_stage4_6h(cache_dir):
+    """Map valid-datetime -> 6h Stage IV grib path among extracted files."""
+    idx = {}
+    for p in cache_dir.rglob("*.grb2"):
+        m = re.search(r"(\d{10})\.06h", p.name)
+        if m:
+            idx[datetime.strptime(m.group(1), "%Y%m%d%H")] = p
+    return idx
+
+
+def read_stage4(path):
+    """Return (lat2d, lon2d, data_mm) for a Stage IV 6h file (fill/neg -> 0)."""
+    for ds in cfgrib.open_datasets(str(path)):
+        for var in ds.data_vars:
+            da = ds[var]
+            data = np.where(da.values < 0, 0.0, da.values)
+            data = np.nan_to_num(data, nan=0.0)
+            lat = da.latitude.values
+            lon = da.longitude.values
+            lon = np.where(lon > 180, lon - 360, lon)
+            return lat, lon, data
+    raise RuntimeError(f"no variable in {path}")
+
+
+def stage4_total(start_dt, end_dt, cache_dir):
+    """Sum 6-hourly Stage IV over (start_dt, end_dt], masked to the TC swath.
+
+    Returns (lat2d, lon2d, total_mm) or (None, None, None) if unavailable.
+    """
+    ensure_stage4_files(start_dt, end_dt, cache_dir)
+    idx = index_stage4_6h(cache_dir)
+    if not idx:
+        return None, None, None
+
+    total = lat2d = lon2d = None
+    t = start_dt + timedelta(hours=6)
+    while t <= end_dt:
+        path = idx.get(t)
+        if path is None:
+            print(f"  Stage IV 6h missing for {t:%Y-%m-%d %HZ}")
+            t += timedelta(hours=6)
+            continue
+        try:
+            lat, lon, data = read_stage4(path)
+        except Exception as e:
+            print(f"  Stage IV read failed {t:%Y-%m-%d %HZ}: {e}")
+            t += timedelta(hours=6)
+            continue
+        if total is None:
+            lat2d, lon2d = lat, lon
+            total = np.zeros_like(data)
+        # Mask this 6h field to within TC_MASK_RADIUS_KM of the TC center.
+        tlat, tlon = tc_position_at(t)
+        dist = haversine_km(tlat, tlon, lat2d, lon2d)
+        total += np.where(dist <= TC_MASK_RADIUS_KM, data, 0.0)
+        t += timedelta(hours=6)
+    return lat2d, lon2d, total
+
+
+# =============================================================================
 # Plotting
 # =============================================================================
 
@@ -97,17 +201,20 @@ def qpf_cmap():
     return cmap, norm
 
 
-def plot_parent(end_fhour, hafs_lons, hafs_lats, hafs_mm,
-                mrms_lons, mrms_lats, mrms_mm, domain, out_path):
-    valid_dt = INIT_DT + timedelta(hours=end_fhour)
+def plot_compare(panels, end_fhour, domain, out_path):
+    """panels: list of (lons, lats, data_mm, title); data may be None."""
     lat_min, lat_max, lon_min, lon_max = domain
     cmap, norm = qpf_cmap()
 
     fig, axes = plt.subplots(
-        1, 2, figsize=(16, 7),
+        1, len(panels), figsize=(8 * len(panels), 7),
         subplot_kw={"projection": ccrs.PlateCarree()},
     )
-    for ax in axes:
+    if len(panels) == 1:
+        axes = [axes]
+
+    cf = None
+    for ax, (lons, lats, data, title) in zip(axes, panels):
         ax.set_extent([lon_min, lon_max, lat_min, lat_max],
                       crs=ccrs.PlateCarree())
         ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
@@ -116,39 +223,23 @@ def plot_parent(end_fhour, hafs_lons, hafs_lats, hafs_mm,
         gl = ax.gridlines(draw_labels=True, linewidth=0.4,
                           linestyle="--", alpha=0.5)
         gl.top_labels = gl.right_labels = False
+        if data is not None:
+            cf = ax.contourf(
+                lons, lats, data, levels=QPF_LEVELS, cmap=cmap, norm=norm,
+                transform=ccrs.PlateCarree(), extend="max",
+            )
+        else:
+            ax.text(0.5, 0.5, "unavailable", ha="center", va="center",
+                    transform=ax.transAxes)
+        ax.set_title(title)
 
-    cf = axes[0].contourf(
-        hafs_lons, hafs_lats, hafs_mm,
-        levels=QPF_LEVELS, cmap=cmap, norm=norm,
-        transform=ccrs.PlateCarree(), extend="max",
-    )
-    axes[0].set_title(
-        f"HAFS-A Parent-Domain Accumulated Precip (APCP)\n"
-        f"Init {INIT_DT.strftime('%Y-%m-%d %HZ')} | "
-        f"0–{end_fhour}h (valid {valid_dt.strftime('%Y-%m-%d %HZ')})"
-    )
-
-    if mrms_mm is not None:
-        axes[1].contourf(
-            mrms_lons, mrms_lats, mrms_mm,
-            levels=QPF_LEVELS, cmap=cmap, norm=norm,
-            transform=ccrs.PlateCarree(), extend="max",
-        )
-        axes[1].set_title(
-            f"MRMS MultiSensor QPE (Pass2)\n"
-            f"{end_fhour}h accumulation "
-            f"({INIT_DT.strftime('%Y-%m-%d %HZ')} – {valid_dt.strftime('%Y-%m-%d %HZ')})"
-        )
-    else:
-        axes[1].text(0.5, 0.5, "MRMS data unavailable",
-                     ha="center", va="center", transform=axes[1].transAxes)
-        axes[1].set_title("MRMS MultiSensor QPE — unavailable")
-
-    plt.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
-                 ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
+    if cf is not None:
+        plt.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
+                     ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
+    valid_dt = INIT_DT + timedelta(hours=end_fhour)
     fig.suptitle(
-        f"Hurricane Helene — HAFS-A parent-domain QPF vs MRMS QPE "
-        f"(0–{end_fhour}h)",
+        f"Hurricane Helene — HAFS-A parent QPF vs MRMS vs Stage IV "
+        f"(0–{end_fhour}h, valid {valid_dt:%Y-%m-%d %HZ})",
         fontsize=13, y=1.01,
     )
     plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
@@ -190,8 +281,10 @@ def main():
     print(f"\nUsing 0->{end_fhour}h cumulative record, grid {hafs_lats.shape}, "
           f"max {np.nanmax(hafs_mm):.0f} mm ({np.nanmax(hafs_mm)/25.4:.1f} in)")
 
+    valid_end = INIT_DT + timedelta(hours=end_fhour)
+
     # TC rainfall swath mask on the parent grid (union of 500 km circles along
-    # the best track for hours 0..end_fhour) — same footprint as MRMS below.
+    # the best track for hours 0..end_fhour) — same footprint as the QPE below.
     hafs_swath = np.zeros(hafs_lats.shape, dtype=bool)
     for h in range(0, end_fhour + 1):
         tlat, tlon = tc_position_at(INIT_DT + timedelta(hours=h))
@@ -205,8 +298,7 @@ def main():
     print(f"\nAccumulating MRMS 1H QPE over hours 1–{end_fhour} ...")
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
-    mrms_lats = mrms_lons = None
-    mrms_total = None
+    mrms_lats = mrms_lons = mrms_total = None
     for h in range(1, end_fhour + 1):
         t = INIT_DT + timedelta(hours=h)
         try:
@@ -224,17 +316,36 @@ def main():
         dist = haversine_km(tlat, tlon, mlat2d, mlon2d)
         mrms_total += np.where(dist <= TC_MASK_RADIUS_KM, cdata, 0.0)
         if h % 12 == 0 or h == end_fhour:
-            print(f"  cached h{h:03d}/{end_fhour} ({t.strftime('%Y-%m-%d %HZ')})")
+            print(f"  cached h{h:03d}/{end_fhour} ({t:%Y-%m-%d %HZ})")
 
     # ------------------------------------------------------------------
-    # Plot.
+    # Stage IV total over the same window (6-hourly), masked to the swath.
     # ------------------------------------------------------------------
-    plot_parent(end_fhour, hafs_lons, hafs_lats, hafs_display,
-                mrms_lons, mrms_lats, mrms_total, FIXED_DOMAIN, PARENT_PNG)
-    hafs_max = float(np.nanmax(hafs_display))
-    mrms_max = float(np.nanmax(mrms_total)) if mrms_total is not None else float("nan")
+    print(f"\nAccumulating Stage IV 6H QPE over {INIT_DT:%Y-%m-%d %HZ} "
+          f"-> {valid_end:%Y-%m-%d %HZ} ...")
+    s4_lats, s4_lons, s4_total = stage4_total(INIT_DT, valid_end, STAGE4_CACHE_DIR)
+    if s4_total is None:
+        print("  Stage IV unavailable (download/extract failed).")
+
+    # ------------------------------------------------------------------
+    # Plot 3-panel.
+    # ------------------------------------------------------------------
+    panels = [
+        (hafs_lons, hafs_lats, hafs_display,
+         f"HAFS-A Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),
+        (mrms_lons, mrms_lats, mrms_total,
+         f"MRMS MultiSensor QPE (Pass2)\n{end_fhour}h accumulation"),
+        (s4_lons, s4_lats, s4_total,
+         f"NCEP Stage IV QPE (CONUS)\n{end_fhour}h accumulation"),
+    ]
+    plot_compare(panels, end_fhour, FIXED_DOMAIN, PARENT_PNG)
+
+    def _mx(a):
+        return float(np.nanmax(a)) if a is not None else float("nan")
     print(f"\nSaved {PARENT_PNG}")
-    print(f"  HAFS parent max {hafs_max:.0f} mm | MRMS max {mrms_max:.0f} mm")
+    print(f"  HAFS parent max {_mx(hafs_display):.0f} mm | "
+          f"MRMS max {_mx(mrms_total):.0f} mm | "
+          f"Stage IV max {_mx(s4_total):.0f} mm")
 
 
 if __name__ == "__main__":
