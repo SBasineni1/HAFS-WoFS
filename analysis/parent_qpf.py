@@ -132,23 +132,28 @@ def ensure_stage4_files(start_dt, end_dt, cache_dir):
         day += timedelta(days=1)
 
 
-def index_stage4_6h(cache_dir):
-    """Map valid-datetime -> 6h Stage IV grib path among extracted files."""
+def index_stage4_24h_conus(cache_dir):
+    """Map date string (YYYYMMDD) -> CONUS 24h Stage IV grib path.
+
+    The water.noaa.gov daily source tar holds only 24h accumulations per region
+    (conus_YYYYMMDD_24h.grb2, valid 12Z->12Z); we use the CONUS one.
+    """
     idx = {}
-    for p in cache_dir.rglob("*.grb2"):
-        m = re.search(r"(\d{10})\.06h", p.name)
+    for p in cache_dir.rglob("*conus*24h*.grb2"):
+        m = re.search(r"(\d{8})_24h", p.name)
         if m:
-            idx[datetime.strptime(m.group(1), "%Y%m%d%H")] = p
+            idx[m.group(1)] = p
     return idx
 
 
 def read_stage4(path):
-    """Return (lat2d, lon2d, data_mm) for a Stage IV 6h file (fill/neg -> 0)."""
+    """Return (lat2d, lon2d, data_mm) for a Stage IV file (fill/neg -> 0)."""
     for ds in cfgrib.open_datasets(str(path)):
         for var in ds.data_vars:
             da = ds[var]
-            data = np.where(da.values < 0, 0.0, da.values)
-            data = np.nan_to_num(data, nan=0.0)
+            data = np.nan_to_num(da.values, nan=0.0)
+            data = np.where(data < 0, 0.0, data)
+            data = np.where(data > 2000, 0.0, data)   # drop absurd fill values
             lat = da.latitude.values
             lon = da.longitude.values
             lon = np.where(lon > 180, lon - 360, lon)
@@ -156,39 +161,55 @@ def read_stage4(path):
     raise RuntimeError(f"no variable in {path}")
 
 
-def stage4_total(start_dt, end_dt, cache_dir):
-    """Sum 6-hourly Stage IV over (start_dt, end_dt], masked to the TC swath.
+def stage4_total(init_dt, end_fhour, cache_dir):
+    """Sum the daily CONUS 24h Stage IV files spanning the forecast window,
+    then mask the total to the full-track TC swath (same footprint as HAFS).
 
-    Returns (lat2d, lon2d, total_mm) or (None, None, None) if unavailable.
+    24h files are valid 12Z->12Z so they don't align exactly with the 00Z-init
+    0->end_fhour window; we sum every day the event touches.  Returns
+    (lat2d, lon2d, total_mm, label) or (None, None, None, None) if unavailable.
     """
-    ensure_stage4_files(start_dt, end_dt, cache_dir)
-    idx = index_stage4_6h(cache_dir)
+    valid_end = init_dt + timedelta(hours=end_fhour)
+    ensure_stage4_files(init_dt, valid_end, cache_dir)
+    idx = index_stage4_24h_conus(cache_dir)
     if not idx:
-        return None, None, None
+        return None, None, None, None
 
     total = lat2d = lon2d = None
-    t = start_dt + timedelta(hours=6)
-    while t <= end_dt:
-        path = idx.get(t)
-        if path is None:
-            print(f"  Stage IV 6h missing for {t:%Y-%m-%d %HZ}")
-            t += timedelta(hours=6)
-            continue
-        try:
-            lat, lon, data = read_stage4(path)
-        except Exception as e:
-            print(f"  Stage IV read failed {t:%Y-%m-%d %HZ}: {e}")
-            t += timedelta(hours=6)
-            continue
-        if total is None:
-            lat2d, lon2d = lat, lon
-            total = np.zeros_like(data)
-        # Mask this 6h field to within TC_MASK_RADIUS_KM of the TC center.
-        tlat, tlon = tc_position_at(t)
-        dist = haversine_km(tlat, tlon, lat2d, lon2d)
-        total += np.where(dist <= TC_MASK_RADIUS_KM, data, 0.0)
-        t += timedelta(hours=6)
-    return lat2d, lon2d, total
+    used = []
+    day = init_dt.date()
+    while day <= valid_end.date():
+        key = day.strftime("%Y%m%d")
+        path = idx.get(key)
+        if path is not None:
+            try:
+                lat, lon, data = read_stage4(path)
+            except Exception as e:
+                print(f"  Stage IV read failed {key}: {e}")
+                day += timedelta(days=1)
+                continue
+            if total is None:
+                lat2d, lon2d = lat, lon
+                total = np.zeros_like(data)
+            total += data
+            used.append(key)
+        day += timedelta(days=1)
+
+    if total is None:
+        return None, None, None, None
+
+    # Mask the summed total to the union of 500 km circles along the track.
+    swath = np.zeros(lat2d.shape, dtype=bool)
+    for h in range(0, end_fhour + 1):
+        tlat, tlon = tc_position_at(init_dt + timedelta(hours=h))
+        swath |= haversine_km(tlat, tlon, lat2d, lon2d) <= TC_MASK_RADIUS_KM
+    total = np.where(swath, total, 0.0)
+
+    # 24h file dated D covers 12Z(D-1)->12Z(D); report the spanned window.
+    d0 = datetime.strptime(used[0], "%Y%m%d") - timedelta(hours=12)
+    d1 = datetime.strptime(used[-1], "%Y%m%d")
+    label = f"~{d0:%m-%d %HZ} – {d1:%m-%d 12Z} ({len(used)}×24h)"
+    return lat2d, lon2d, total, label
 
 
 # =============================================================================
@@ -321,11 +342,15 @@ def main():
     # ------------------------------------------------------------------
     # Stage IV total over the same window (6-hourly), masked to the swath.
     # ------------------------------------------------------------------
-    print(f"\nAccumulating Stage IV 6H QPE over {INIT_DT:%Y-%m-%d %HZ} "
+    print(f"\nAccumulating Stage IV 24H CONUS QPE spanning {INIT_DT:%Y-%m-%d %HZ} "
           f"-> {valid_end:%Y-%m-%d %HZ} ...")
-    s4_lats, s4_lons, s4_total = stage4_total(INIT_DT, valid_end, STAGE4_CACHE_DIR)
+    s4_lats, s4_lons, s4_total, s4_label = stage4_total(
+        INIT_DT, end_fhour, STAGE4_CACHE_DIR)
     if s4_total is None:
         print("  Stage IV unavailable (download/extract failed).")
+        s4_label = "unavailable"
+    else:
+        print(f"  Stage IV window: {s4_label}")
 
     # ------------------------------------------------------------------
     # Plot 3-panel.
@@ -336,7 +361,7 @@ def main():
         (mrms_lons, mrms_lats, mrms_total,
          f"MRMS MultiSensor QPE (Pass2)\n{end_fhour}h accumulation"),
         (s4_lons, s4_lats, s4_total,
-         f"NCEP Stage IV QPE (CONUS)\n{end_fhour}h accumulation"),
+         f"NCEP Stage IV QPE (CONUS)\n{s4_label}"),
     ]
     plot_compare(panels, end_fhour, FIXED_DOMAIN, PARENT_PNG)
 
