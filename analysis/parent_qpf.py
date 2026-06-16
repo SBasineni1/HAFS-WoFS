@@ -51,13 +51,19 @@ import cartopy.feature as cfeature
 
 from qpf_full_run import (
     HAFS_RUN_DIR, INIT_STR, INIT_DT, FIXED_DOMAIN,
-    TC_MASK_RADIUS_KM, OUT_DIR, MRMS_CACHE_DIR,
+    OUT_DIR, MRMS_CACHE_DIR,
     QPF_LEVELS, QPF_COLORS,
     read_hafs_tp_records,
     tc_position_at, haversine_km, load_mrms_hour, crop_to_domain,
 )
 
 PARENT_PNG = OUT_DIR.parent / "parent_qpf_helene_hfsa.png"
+
+# TC-swath mask radius (km) for THIS figure only — kept separate from the shared
+# qpf_full_run.TC_MASK_RADIUS_KM so the ETS/animation verification footprint
+# stays at its own value.  Widen to show more of the rain shield (pulls in more
+# non-Helene synoptic rain); set back to 500 to match the verification scripts.
+MASK_RADIUS_KM = 750.0
 
 # Stage IV QPE — NOAA water.noaa.gov daily source tarballs (GRIB2 since 2020).
 # Each daily tar is valid 12Z->12Z and holds 1h/6h/24h accumulation files.
@@ -147,13 +153,14 @@ def index_stage4_24h_conus(cache_dir):
 
 
 def read_stage4(path):
-    """Return (lat2d, lon2d, data_mm) for a Stage IV file (fill/neg -> 0)."""
+    """Return (lat2d, lon2d, data_mm) for a Stage IV file, UNMODIFIED except
+    that GRIB missing/negative flags are set to 0 so the array is plottable.
+    No precip values are clipped — raw amounts are preserved for diagnosis."""
     for ds in cfgrib.open_datasets(str(path)):
         for var in ds.data_vars:
             da = ds[var]
-            data = np.nan_to_num(da.values, nan=0.0)
-            data = np.where(data < 0, 0.0, data)
-            data = np.where(data > 2000, 0.0, data)   # drop absurd fill values
+            raw = da.values
+            data = np.where(np.isnan(raw) | (raw < 0), 0.0, raw)
             lat = da.latitude.values
             lon = da.longitude.values
             lon = np.where(lon > 180, lon - 360, lon)
@@ -193,6 +200,11 @@ def stage4_total(init_dt, end_fhour, cache_dir):
                 total = np.zeros_like(data)
             total += data
             used.append(key)
+            # Per-file diagnostic: where is the daily max, how many extreme px?
+            j, i = np.unravel_index(np.argmax(data), data.shape)
+            print(f"  {key} 24h: max {data[j, i]:6.0f} mm at "
+                  f"({lat[j, i]:.2f}, {lon[j, i]:.2f})  "
+                  f">300mm:{int((data > 300).sum())}  >600mm:{int((data > 600).sum())}")
         day += timedelta(days=1)
 
     if total is None:
@@ -202,8 +214,15 @@ def stage4_total(init_dt, end_fhour, cache_dir):
     swath = np.zeros(lat2d.shape, dtype=bool)
     for h in range(0, end_fhour + 1):
         tlat, tlon = tc_position_at(init_dt + timedelta(hours=h))
-        swath |= haversine_km(tlat, tlon, lat2d, lon2d) <= TC_MASK_RADIUS_KM
+        swath |= haversine_km(tlat, tlon, lat2d, lon2d) <= MASK_RADIUS_KM
     total = np.where(swath, total, 0.0)
+
+    # Total diagnostic: locate the event-total max so you can judge if it's a
+    # real accumulation or an artifact (e.g. a stuck pixel across days).
+    j, i = np.unravel_index(np.argmax(total), total.shape)
+    print(f"  Stage IV total: max {total[j, i]:.0f} mm at "
+          f"({lat2d[j, i]:.2f}, {lon2d[j, i]:.2f})  "
+          f">500mm:{int((total > 500).sum())}  >800mm:{int((total > 800).sum())}")
 
     # 24h file dated D covers 12Z(D-1)->12Z(D); report the spanned window.
     d0 = datetime.strptime(used[0], "%Y%m%d") - timedelta(hours=12)
@@ -309,7 +328,7 @@ def main():
     hafs_swath = np.zeros(hafs_lats.shape, dtype=bool)
     for h in range(0, end_fhour + 1):
         tlat, tlon = tc_position_at(INIT_DT + timedelta(hours=h))
-        hafs_swath |= haversine_km(tlat, tlon, hafs_lats, hafs_lons) <= TC_MASK_RADIUS_KM
+        hafs_swath |= haversine_km(tlat, tlon, hafs_lats, hafs_lons) <= MASK_RADIUS_KM
     hafs_display = np.where(hafs_swath, np.nan_to_num(hafs_mm, nan=0.0), 0.0)
 
     # ------------------------------------------------------------------
@@ -335,7 +354,7 @@ def main():
         tlat, tlon = tc_position_at(t)
         mlon2d, mlat2d = np.meshgrid(mrms_lons, mrms_lats)
         dist = haversine_km(tlat, tlon, mlat2d, mlon2d)
-        mrms_total += np.where(dist <= TC_MASK_RADIUS_KM, cdata, 0.0)
+        mrms_total += np.where(dist <= MASK_RADIUS_KM, cdata, 0.0)
         if h % 12 == 0 or h == end_fhour:
             print(f"  cached h{h:03d}/{end_fhour} ({t:%Y-%m-%d %HZ})")
 
