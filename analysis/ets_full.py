@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 
 from qpf_full_run import (
     HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER, FIXED_DOMAIN, GRID_RES,
-    TC_MASK_RADIUS_KM, INIT_DT, OUT_DIR, MRMS_CACHE_DIR,
+    TC_MASK_RADIUS_KM, INIT_DT, OUT_DIR,
     discover_files, hafs_event_total,
 )
 from ets_score import (
@@ -109,10 +109,7 @@ def hafs_parent_total(grid_lat, grid_lon):
 def stage4_on_fixed(max_fhour, grid_lat, grid_lon):
     """Stage IV touched-days total (parent_qpf.stage4_total) on the fixed mesh.
 
-    stage4_total masks its output to parent_qpf's 750 km display swath; for
-    verification we re-derive the field UNMASKED is not exposed, so we accept
-    that mask — it is wider than the 500 km verification swath, so the tighter
-    tc_swath_mask applied later still governs the scored footprint. Stage IV is
+    stage4_total returns its field already masked to parent_qpf's 750 km display swath; an unmasked variant is not exposed. We accept that mask because it is wider than the 500 km verification swath, so the tighter tc_swath_mask applied later governs the scored footprint. Stage IV is
     CONUS-only, so ocean points regrid to NaN and drop out automatically.
     """
     s4_lat, s4_lon, s4_total, s4_label = stage4_total(
@@ -207,11 +204,11 @@ def main():
             results.append(dict(forecast=fname, observation=oname,
                                 rows=rows, n_valid=n_valid))
             print(f"\n{fname} vs {oname}  (n_valid={n_valid:,})")
-            print(f"{'thr':>5} {'a':>7} {'b':>7} {'c':>7} {'ETS':>7} "
+            print(f"{'thr':>5} {'a':>7} {'b':>7} {'c':>7} {'d':>7} {'ETS':>7} "
                   f"{'bias':>6} {'POD':>6} {'FAR':>6} {'CSI':>6}")
             for r in rows:
                 print(f"{r['threshold']:>5} {r['a']:>7} {r['b']:>7} {r['c']:>7} "
-                      f"{r['ets']:>7.3f} {r['bias']:>6.2f} {r['pod']:>6.2f} "
+                      f"{r['d']:>7} {r['ets']:>7.3f} {r['bias']:>6.2f} {r['pod']:>6.2f} "
                       f"{r['far']:>6.2f} {r['csi']:>6.2f}")
     print("=" * 84)
 
@@ -227,9 +224,13 @@ def main():
                             "observation": res["observation"], **r})
     print(f"\nSaved table: {OUT_CSV}")
 
-    caveat = (f"Stage IV: CONUS-only, 24h 12Z–12Z files summed over touched "
-              f"days ({s4_label}) — window approximates the 0–{max_fhour}h "
-              f"forecast accumulation.")
+    if stage4_grid is None:
+        caveat = "Stage IV unavailable — not scored."
+    else:
+        caveat = (f"Stage IV: CONUS-only, 24h 12Z–12Z files summed over touched "
+                  f"days ({s4_label}) — window approximates the 0–{max_fhour}h "
+                  f"forecast accumulation.")
+    print(caveat)
     plot_curves(results, max_fhour, OUT_PNG, caveat=caveat)
     print(f"Saved plot : {OUT_PNG}")
 
