@@ -121,3 +121,118 @@ def stage4_on_fixed(max_fhour, grid_lat, grid_lon):
         return None, "unavailable"
     grid = regrid_2d_to_fixed(s4_lat, s4_lon, s4_total, grid_lat, grid_lon)
     return grid, s4_label
+
+
+# obs -> color, forecast -> linestyle/marker, so 4 curves stay legible.
+_OBS_COLOR = {"MRMS": "#1f77b4", "Stage IV": "#2ca02c"}
+_FCST_STYLE = {"parent": dict(ls="-", marker="o"),
+               "nest": dict(ls="--", marker="s")}
+
+
+def plot_curves(results, max_fhour, out_path, caveat=""):
+    """results: list of dicts {forecast, observation, rows, n_valid}."""
+    fig, ax = plt.subplots(figsize=(9.5, 6.5))
+    for res in results:
+        rows = res["rows"]
+        if not rows:
+            continue
+        thr = [r["threshold"] for r in rows]
+        ets = [r["ets"] for r in rows]
+        style = _FCST_STYLE.get(res["forecast"], dict(ls="-", marker="o"))
+        ax.plot(thr, ets, color=_OBS_COLOR.get(res["observation"], "gray"),
+                lw=2, **style,
+                label=f"{res['forecast']} vs {res['observation']} "
+                      f"(n={res['n_valid']:,})")
+    ax.axhline(0, color="gray", ls=":", lw=0.8)
+    ax.set_xscale("log")
+    ax.set_xticks(THRESHOLDS_MM)
+    ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+    ax.set_xlabel("Rainfall threshold (mm)")
+    ax.set_ylabel("Equitable Threat Score (ETS)")
+    ax.set_ylim(-0.2, 1.0)
+    ax.grid(True, which="both", ls=":", alpha=0.4)
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title(
+        f"Hurricane Helene — HAFS-A QPF ETS vs MRMS & Stage IV\n"
+        f"0–{max_fhour}h | init {INIT_DT:%Y-%m-%d %HZ} | "
+        f"TC swath ≤{TC_MASK_RADIUS_KM:.0f} km"
+    )
+    if caveat:
+        fig.text(0.5, -0.02, caveat, ha="center", fontsize=8, color="#555")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def main():
+    file_pairs = discover_files(HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER)
+    if not file_pairs:
+        print(f"No files matching {FILE_GLOB} in {HAFS_RUN_DIR}")
+        return
+    max_fhour = file_pairs[-1][0]
+    print(f"Init {INIT_DT:%Y-%m-%d %HZ} | accumulation 0–{max_fhour}h")
+
+    grid_lat, grid_lon = build_fixed_grid()
+    print(f"Fixed grid: {grid_lat.shape[0]}x{grid_lat.shape[1]} @ {GRID_RES}deg")
+
+    print("\nHAFS nest total ...")
+    nest_total, apcp_mode = hafs_event_total(file_pairs, grid_lat, grid_lon)
+    print(f"  nest APCP mode: {apcp_mode}, max {np.nanmax(nest_total):.0f} mm")
+
+    print("HAFS parent total ...")
+    parent_total = hafs_parent_total(grid_lat, grid_lon)
+
+    print("MRMS total ...")
+    mrms_total = build_mrms_total(max_fhour, grid_lat, grid_lon)
+
+    print("Stage IV total ...")
+    stage4_grid, s4_label = stage4_on_fixed(max_fhour, grid_lat, grid_lon)
+
+    print("TC verification swath ...")
+    swath = tc_swath_mask(max_fhour, grid_lat, grid_lon)
+
+    forecasts = [("parent", parent_total), ("nest", nest_total)]
+    observations = [("MRMS", mrms_total)]
+    if stage4_grid is not None:
+        observations.append(("Stage IV", stage4_grid))
+    else:
+        print("  Stage IV unavailable — scoring MRMS only.")
+
+    results = []
+    print("\n" + "=" * 84)
+    for fname, fgrid in forecasts:
+        for oname, ogrid in observations:
+            rows, n_valid = score_pair(fgrid, ogrid, swath,
+                                       THRESHOLDS_MM, contingency_scores)
+            results.append(dict(forecast=fname, observation=oname,
+                                rows=rows, n_valid=n_valid))
+            print(f"\n{fname} vs {oname}  (n_valid={n_valid:,})")
+            print(f"{'thr':>5} {'a':>7} {'b':>7} {'c':>7} {'ETS':>7} "
+                  f"{'bias':>6} {'POD':>6} {'FAR':>6} {'CSI':>6}")
+            for r in rows:
+                print(f"{r['threshold']:>5} {r['a']:>7} {r['b']:>7} {r['c']:>7} "
+                      f"{r['ets']:>7.3f} {r['bias']:>6.2f} {r['pod']:>6.2f} "
+                      f"{r['far']:>6.2f} {r['csi']:>6.2f}")
+    print("=" * 84)
+
+    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["forecast", "observation", "threshold", "a", "b", "c", "d",
+                  "ets", "bias", "pod", "far", "csi"]
+    with open(OUT_CSV, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fieldnames)
+        w.writeheader()
+        for res in results:
+            for r in res["rows"]:
+                w.writerow({"forecast": res["forecast"],
+                            "observation": res["observation"], **r})
+    print(f"\nSaved table: {OUT_CSV}")
+
+    caveat = (f"Stage IV: CONUS-only, 24h 12Z–12Z files summed over touched "
+              f"days ({s4_label}) — window approximates the 0–{max_fhour}h "
+              f"forecast accumulation.")
+    plot_curves(results, max_fhour, OUT_PNG, caveat=caveat)
+    print(f"Saved plot : {OUT_PNG}")
+
+
+if __name__ == "__main__":
+    main()
