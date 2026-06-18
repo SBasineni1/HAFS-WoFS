@@ -49,5 +49,14 @@ def regrid_2d_to_fixed(src_lat, src_lon, data, grid_lat, grid_lon):
 
 
 def score_pair(fcst_grid, obs_grid, swath, thresholds, contingency_fn):
-    """Placeholder — implemented in Task 2."""
-    raise NotImplementedError
+    """Score one forecast/observation pair over the swath's valid points.
+
+    Valid points are swath & finite(obs) & finite(fcst); kept values are
+    zero-filled before thresholding. Returns (rows, n_valid).
+    """
+    valid = swath & np.isfinite(obs_grid) & np.isfinite(fcst_grid)
+    n_valid = int(np.sum(valid))
+    fcst = np.nan_to_num(fcst_grid[valid], nan=0.0)
+    obs = np.nan_to_num(obs_grid[valid], nan=0.0)
+    rows = [contingency_fn(fcst, obs, thr) for thr in thresholds]
+    return rows, n_valid

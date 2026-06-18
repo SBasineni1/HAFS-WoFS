@@ -63,6 +63,55 @@ def test_regrid_2d_nan_outside_source():
     assert np.isfinite(out[3, 3])
 
 
+def _toy_contingency(fcst, obs, threshold):
+    fy = fcst >= threshold
+    oy = obs >= threshold
+    a = int(np.sum(fy & oy))
+    b = int(np.sum(fy & ~oy))
+    c = int(np.sum(~fy & oy))
+    d = int(np.sum(~fy & ~oy))
+    n = a + b + c + d
+    a_ref = (a + b) * (a + c) / n if n else 0.0
+    denom = (a + b + c) - a_ref
+    ets = (a - a_ref) / denom if denom else float("nan")
+    return dict(threshold=threshold, a=a, b=b, c=c, d=d, ets=ets,
+                bias=float("nan"), pod=float("nan"),
+                far=float("nan"), csi=float("nan"))
+
+
+def test_score_pair_counts_only_valid_points():
+    # 3x3 grids. swath excludes the last column; obs has one NaN inside swath.
+    fcst = np.array([[10.0, 0.0, 0.0],
+                     [10.0, 10.0, 0.0],
+                     [0.0, 0.0, 0.0]])
+    obs = np.array([[10.0, 0.0, 99.0],
+                    [0.0, np.nan, 99.0],
+                    [0.0, 0.0, 99.0]])
+    swath = np.array([[True, True, False],
+                      [True, True, False],
+                      [True, True, False]], dtype=bool)
+    # Valid = swath & isfinite(obs) & isfinite(fcst):
+    #   row0: (T,T) -> 2 ; row1: (T, NaN->drop) -> 1 ; row2: (T,T) -> 2  => 5
+    rows, n_valid = score_pair(fcst, obs, swath, [5.0], _toy_contingency)
+
+    assert n_valid == 5
+    r = rows[0]
+    # At thr=5 over the 5 valid pts: fcst>=5 at (0,0) and (1,0); obs>=5 at (0,0).
+    # hit a=1 (0,0); false alarm b=1 (1,0); miss c=0; correct-neg d=3.
+    assert (r["a"], r["b"], r["c"], r["d"]) == (1, 1, 0, 3)
+
+
+def test_score_pair_one_row_per_threshold():
+    fcst = np.zeros((4, 4))
+    obs = np.zeros((4, 4))
+    swath = np.ones((4, 4), dtype=bool)
+    rows, n_valid = score_pair(fcst, obs, swath, [1.0, 5.0, 10.0],
+                               _toy_contingency)
+    assert len(rows) == 3
+    assert [r["threshold"] for r in rows] == [1.0, 5.0, 10.0]
+    assert n_valid == 16
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
