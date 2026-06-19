@@ -109,7 +109,10 @@ def hafs_parent_total(grid_lat, grid_lon):
 def stage4_on_fixed(max_fhour, grid_lat, grid_lon):
     """Stage IV touched-days total (parent_qpf.stage4_total) on the fixed mesh.
 
-    stage4_total returns its field already masked to parent_qpf's 750 km display swath; an unmasked variant is not exposed. We accept that mask because it is wider than the 500 km verification swath, so the tighter tc_swath_mask applied later governs the scored footprint. Stage IV is
+    stage4_total returns its field already masked to parent_qpf's 750 km
+    display swath; an unmasked variant is not exposed. We accept that mask
+    because it is wider than the 500 km verification swath, so the tighter
+    tc_swath_mask applied later governs the scored footprint. Stage IV is
     CONUS-only, so ocean points regrid to NaN and drop out automatically.
     """
     s4_lat, s4_lon, s4_total, s4_label = stage4_total(
