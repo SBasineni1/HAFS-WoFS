@@ -1,5 +1,5 @@
 """
-HAFS-A PARENT-domain QPF vs MRMS QPE vs Stage IV QPE — static 3-panel.
+HAFS PARENT-domain QPF vs MRMS QPE vs Stage IV QPE — static 3-panel.
 
 The parent panel is the field operational viewers (e.g. Tropical Tidbits'
 "HAFS-A Parent Model — Total Accumulated Precip") draw.  The 6-km parent domain
@@ -22,7 +22,7 @@ honest and viewer-consistent.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/parent_qpf.py [/path/to/parent.atm.fXXX.grb2]
+    python analysis/parent_qpf.py storms/helene_hfsa.yaml
 
 Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
 """
@@ -50,34 +50,23 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
 from qpf_full_run import (
-    HAFS_RUN_DIR, INIT_STR, INIT_DT, FIXED_DOMAIN,
-    OUT_DIR, MRMS_CACHE_DIR,
     QPF_LEVELS, QPF_COLORS,
-    read_hafs_tp_records,
-    tc_position_at, haversine_km, load_mrms_hour, crop_to_domain,
+    read_hafs_tp_records, haversine_km, load_mrms_hour, crop_to_domain,
 )
-
-PARENT_PNG = OUT_DIR.parent / "parent_qpf_helene_hfsa.png"
-
-# TC-swath mask radius (km) for THIS figure only — kept separate from the shared
-# qpf_full_run.TC_MASK_RADIUS_KM so the ETS/animation verification footprint
-# stays at its own value.  Widen to show more of the rain shield (pulls in more
-# non-Helene synoptic rain); set back to 500 to match the verification scripts.
-MASK_RADIUS_KM = 750.0
+from hafs_case import from_yaml
 
 # Stage IV QPE — NOAA water.noaa.gov daily source tarballs (GRIB2 since 2020).
 # Each daily tar is valid 12Z->12Z and holds 1h/6h/24h accumulation files.
 STAGE4_BASE = "https://water.noaa.gov/resources/downloads/precip/stageIV"
-STAGE4_CACHE_DIR = Path("/tmp/stage4_cache")
 
 
 # =============================================================================
 # Parent file discovery + cumulative-APCP selection
 # =============================================================================
 
-def default_parent_path():
+def default_parent_path(case):
     """Highest forecast-hour parent.atm file for the configured run."""
-    hits = sorted(HAFS_RUN_DIR.glob(f"**/*{INIT_STR}*parent.atm.f*.grb2"))
+    hits = sorted(case.run_dir.glob(case.parent_glob()))
     if not hits:
         return None
 
@@ -168,7 +157,7 @@ def read_stage4(path):
     raise RuntimeError(f"no variable in {path}")
 
 
-def stage4_total(init_dt, end_fhour, cache_dir):
+def stage4_total(case, end_fhour):
     """Sum the daily CONUS 24h Stage IV files spanning the forecast window,
     then mask the total to the full-track TC swath (same footprint as HAFS).
 
@@ -176,15 +165,15 @@ def stage4_total(init_dt, end_fhour, cache_dir):
     0->end_fhour window; we sum every day the event touches.  Returns
     (lat2d, lon2d, total_mm, label) or (None, None, None, None) if unavailable.
     """
-    valid_end = init_dt + timedelta(hours=end_fhour)
-    ensure_stage4_files(init_dt, valid_end, cache_dir)
-    idx = index_stage4_24h_conus(cache_dir)
+    valid_end = case.init_dt + timedelta(hours=end_fhour)
+    ensure_stage4_files(case.init_dt, valid_end, case.stage4_cache_dir)
+    idx = index_stage4_24h_conus(case.stage4_cache_dir)
     if not idx:
         return None, None, None, None
 
     total = lat2d = lon2d = None
     used = []
-    day = init_dt.date()
+    day = case.init_dt.date()
     while day <= valid_end.date():
         key = day.strftime("%Y%m%d")
         path = idx.get(key)
@@ -210,11 +199,11 @@ def stage4_total(init_dt, end_fhour, cache_dir):
     if total is None:
         return None, None, None, None
 
-    # Mask the summed total to the union of 500 km circles along the track.
+    # Mask the summed total to the union of circles along the track.
     swath = np.zeros(lat2d.shape, dtype=bool)
     for h in range(0, end_fhour + 1):
-        tlat, tlon = tc_position_at(init_dt + timedelta(hours=h))
-        swath |= haversine_km(tlat, tlon, lat2d, lon2d) <= MASK_RADIUS_KM
+        tlat, tlon = case.position_at(case.init_dt + timedelta(hours=h))
+        swath |= haversine_km(tlat, tlon, lat2d, lon2d) <= case.display_radius_km
     total = np.where(swath, total, 0.0)
 
     # Total diagnostic: locate the event-total max so you can judge if it's a
@@ -241,9 +230,9 @@ def qpf_cmap():
     return cmap, norm
 
 
-def plot_compare(panels, end_fhour, domain, out_path):
+def plot_compare(case, panels, end_fhour, out_path):
     """panels: list of (lons, lats, data_mm, title); data may be None."""
-    lat_min, lat_max, lon_min, lon_max = domain
+    lat_min, lat_max, lon_min, lon_max = case.domain
     cmap, norm = qpf_cmap()
 
     fig, axes = plt.subplots(
@@ -276,9 +265,9 @@ def plot_compare(panels, end_fhour, domain, out_path):
     if cf is not None:
         plt.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
                      ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
-    valid_dt = INIT_DT + timedelta(hours=end_fhour)
+    valid_dt = case.init_dt + timedelta(hours=end_fhour)
     fig.suptitle(
-        f"Hurricane Helene — HAFS-A parent QPF vs MRMS vs Stage IV "
+        f"{case.storm_name} — {case.model_label} parent QPF vs MRMS vs Stage IV "
         f"(0–{end_fhour}h, valid {valid_dt:%Y-%m-%d %HZ})",
         fontsize=13, y=1.01,
     )
@@ -290,14 +279,14 @@ def plot_compare(panels, end_fhour, domain, out_path):
 # Main
 # =============================================================================
 
-def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    MRMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def generate_parent_figure(case):
+    case.out_dir.mkdir(parents=True, exist_ok=True)
+    case.mrms_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_parent_path()
+    path = default_parent_path(case)
     if path is None or not path.exists():
-        print(f"No parent.atm file found under {HAFS_RUN_DIR} "
-              f"(matching *{INIT_STR}*parent.atm.f*.grb2)")
+        print(f"No parent.atm file found under {case.run_dir} "
+              f"(matching {case.parent_glob()})")
         return
     print(f"Parent file: {path}")
 
@@ -321,28 +310,28 @@ def main():
     print(f"\nUsing 0->{end_fhour}h cumulative record, grid {hafs_lats.shape}, "
           f"max {np.nanmax(hafs_mm):.0f} mm ({np.nanmax(hafs_mm)/25.4:.1f} in)")
 
-    valid_end = INIT_DT + timedelta(hours=end_fhour)
+    valid_end = case.init_dt + timedelta(hours=end_fhour)
 
-    # TC rainfall swath mask on the parent grid (union of 500 km circles along
+    # TC rainfall swath mask on the parent grid (union of circles along
     # the best track for hours 0..end_fhour) — same footprint as the QPE below.
     hafs_swath = np.zeros(hafs_lats.shape, dtype=bool)
     for h in range(0, end_fhour + 1):
-        tlat, tlon = tc_position_at(INIT_DT + timedelta(hours=h))
-        hafs_swath |= haversine_km(tlat, tlon, hafs_lats, hafs_lons) <= MASK_RADIUS_KM
+        tlat, tlon = case.position_at(case.init_dt + timedelta(hours=h))
+        hafs_swath |= haversine_km(tlat, tlon, hafs_lats, hafs_lons) <= case.display_radius_km
     hafs_display = np.where(hafs_swath, np.nan_to_num(hafs_mm, nan=0.0), 0.0)
 
     # ------------------------------------------------------------------
     # MRMS total over the same 0->end_fhour window, masked to the swath.
     # ------------------------------------------------------------------
-    lat_min, lat_max, lon_min, lon_max = FIXED_DOMAIN
+    lat_min, lat_max, lon_min, lon_max = case.domain
     print(f"\nAccumulating MRMS 1H QPE over hours 1–{end_fhour} ...")
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
     mrms_lats = mrms_lons = mrms_total = None
     for h in range(1, end_fhour + 1):
-        t = INIT_DT + timedelta(hours=h)
+        t = case.init_dt + timedelta(hours=h)
         try:
-            lat, lon, data = load_mrms_hour(s3, t, MRMS_CACHE_DIR)
+            lat, lon, data = load_mrms_hour(s3, t, case.mrms_cache_dir)
             clat, clon, cdata = crop_to_domain(lat, lon, data,
                                                lat_min, lat_max, lon_min, lon_max)
         except Exception as e:
@@ -351,20 +340,19 @@ def main():
         if mrms_total is None:
             mrms_lats, mrms_lons = clat, clon
             mrms_total = np.zeros((clat.size, clon.size))
-        tlat, tlon = tc_position_at(t)
+        tlat, tlon = case.position_at(t)
         mlon2d, mlat2d = np.meshgrid(mrms_lons, mrms_lats)
         dist = haversine_km(tlat, tlon, mlat2d, mlon2d)
-        mrms_total += np.where(dist <= MASK_RADIUS_KM, cdata, 0.0)
+        mrms_total += np.where(dist <= case.display_radius_km, cdata, 0.0)
         if h % 12 == 0 or h == end_fhour:
             print(f"  cached h{h:03d}/{end_fhour} ({t:%Y-%m-%d %HZ})")
 
     # ------------------------------------------------------------------
     # Stage IV total over the same window (6-hourly), masked to the swath.
     # ------------------------------------------------------------------
-    print(f"\nAccumulating Stage IV 24H CONUS QPE spanning {INIT_DT:%Y-%m-%d %HZ} "
+    print(f"\nAccumulating Stage IV 24H CONUS QPE spanning {case.init_dt:%Y-%m-%d %HZ} "
           f"-> {valid_end:%Y-%m-%d %HZ} ...")
-    s4_lats, s4_lons, s4_total, s4_label = stage4_total(
-        INIT_DT, end_fhour, STAGE4_CACHE_DIR)
+    s4_lats, s4_lons, s4_total, s4_label = stage4_total(case, end_fhour)
     if s4_total is None:
         print("  Stage IV unavailable (download/extract failed).")
         s4_label = "unavailable"
@@ -374,23 +362,24 @@ def main():
     # ------------------------------------------------------------------
     # Plot 3-panel.
     # ------------------------------------------------------------------
+    out_png = case.out_dir / f"parent_qpf_{case.case_slug}.png"
     panels = [
         (hafs_lons, hafs_lats, hafs_display,
-         f"HAFS-A Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),
+         f"{case.model_label} Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),
         (mrms_lons, mrms_lats, mrms_total,
          f"MRMS MultiSensor QPE (Pass2)\n{end_fhour}h accumulation"),
         (s4_lons, s4_lats, s4_total,
          f"NCEP Stage IV QPE (CONUS)\n{s4_label}"),
     ]
-    plot_compare(panels, end_fhour, FIXED_DOMAIN, PARENT_PNG)
+    plot_compare(case, panels, end_fhour, out_png)
 
     def _mx(a):
         return float(np.nanmax(a)) if a is not None else float("nan")
-    print(f"\nSaved {PARENT_PNG}")
+    print(f"\nSaved {out_png}")
     print(f"  HAFS parent max {_mx(hafs_display):.0f} mm | "
           f"MRMS max {_mx(mrms_total):.0f} mm | "
           f"Stage IV max {_mx(s4_total):.0f} mm")
 
 
 if __name__ == "__main__":
-    main()
+    generate_parent_figure(from_yaml(sys.argv[1]))
