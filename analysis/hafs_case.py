@@ -167,8 +167,10 @@ def from_yaml(yaml_path):
     return StormCase(
         run_dir=run_dir,
         init_dt=init_dt,
-        storm_name=cfg.get("storm_name") or name or "Storm",
-        model_label=cfg.get("model_label") or detect_model(run_dir),
+        storm_name=(cfg["storm_name"] if "storm_name" in cfg
+                    else (name or "Storm")),
+        model_label=(cfg["model_label"] if "model_label" in cfg
+                     else detect_model(run_dir)),
         domain=domain,
         grid_res=float(cfg.get("grid_res", 0.05)),
         mask_radius_km=float(cfg.get("mask_radius_km", 500.0)),

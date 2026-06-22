@@ -134,12 +134,14 @@ def test_from_yaml_overrides_win():
         yaml_path.write_text(
             f"run_dir: {run_dir}\n"
             "storm_name: Test Storm\n"
+            "model_label: HAFS-X\n"
             "domain: [15.0, 42.0, -100.0, -60.0]\n"
             "mask_radius_km: 300\n"
             "out_dir: /tmp/custom_out\n"
         )
         case = from_yaml(yaml_path)
         assert case.storm_name == "Test Storm"
+        assert case.model_label == "HAFS-X"
         assert case.domain == (15.0, 42.0, -100.0, -60.0)
         assert case.mask_radius_km == 300.0
         assert case.out_dir == Path("/tmp/custom_out")
