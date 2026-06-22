@@ -205,7 +205,8 @@ def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
     """
     total = np.zeros(grid_lat.shape)
     mode_seen = None
-    for fhour, fp in file_pairs:
+    n_files = len(file_pairs)
+    for i, (fhour, fp) in enumerate(file_pairs, start=1):
         try:
             recs = read_hafs_tp_records(fp)
             if not recs:
@@ -224,6 +225,11 @@ def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
                       f"(window {r['start_step']}->{r['end_step']}h)")
         interp = regrid_hafs(r["lats"], r["lons"], r["data"], grid_lat, grid_lon)
         total = accumulate_hafs_step(total, interp, mode)
+        # Per-file progress — the griddata reprojection is slow and otherwise
+        # silent, so without this the loop looks hung on large grids.
+        if verbose:
+            print(f"  nest F{fhour:03d} [{i}/{n_files}] "
+                  f"running max {np.nanmax(total):.0f} mm", flush=True)
     return total, (mode_seen or "cumulative")
 
 
