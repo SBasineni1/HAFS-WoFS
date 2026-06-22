@@ -51,3 +51,21 @@ def parse_atcfunix(path):
                 name = cols[27].title()
     track = [by_tau[t] for t in sorted(by_tau)]
     return name, init_dt, track
+
+
+def detect_model(run_dir):
+    """'HAFS-A'/'HAFS-B'/'HAFS' from HFSA/HFSB in the run-dir path."""
+    s = str(run_dir).upper()
+    if "HFSA" in s:
+        return "HAFS-A"
+    if "HFSB" in s:
+        return "HAFS-B"
+    return "HAFS"
+
+
+def auto_domain(track, pad_deg=2.0):
+    """(lat_min, lat_max, lon_min, lon_max) = padded bbox of the track."""
+    lats = [la for _, la, _ in track]
+    lons = [lo for _, _, lo in track]
+    return (min(lats) - pad_deg, max(lats) + pad_deg,
+            min(lons) - pad_deg, max(lons) + pad_deg)

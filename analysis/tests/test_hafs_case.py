@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FIX = Path(__file__).resolve().parent / "fixtures"
 
-from hafs_case import decode_latlon, parse_atcfunix
+from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain
 
 
 def test_decode_latlon():
@@ -33,6 +33,24 @@ def test_parse_atcfunix_reproduces_helene_track():
     times = [t for t, _, _ in track]
     assert times == sorted(times)
     assert len(times) == len(set(times))
+
+
+def test_detect_model():
+    assert detect_model("/work2/.../helene/HFSA") == "HAFS-A"
+    assert detect_model("/work2/.../helene/HFSB") == "HAFS-B"
+    assert detect_model("/data/hfsa_run/lower") == "HAFS-A"   # case-insensitive
+    assert detect_model("/work2/.../helene/other") == "HAFS"
+
+
+def test_auto_domain_pads_track_bbox():
+    track = [
+        (datetime(2024, 9, 24, 0), 16.8, -83.2),
+        (datetime(2024, 9, 26, 0), 28.8, -84.1),
+        (datetime(2024, 9, 29, 6), 44.3, -61.5),
+    ]
+    lat_min, lat_max, lon_min, lon_max = auto_domain(track, pad_deg=2.0)
+    assert lat_min == 14.8 and lat_max == 46.3
+    assert lon_min == -86.1 and lon_max == -59.5
 
 
 def _run_all():
