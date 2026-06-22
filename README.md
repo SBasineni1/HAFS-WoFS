@@ -11,7 +11,7 @@ HAFS run, copy a YAML case file and change `run_dir`:
 
 Then run from the repo root:
 
-    python analysis/run.py storms/<storm>_<model>.yaml all      # parent + animation + ets
+    python analysis/run.py storms/<storm>_<model>.yaml all      # parent + ets
     python analysis/run.py storms/<storm>_<model>.yaml parent   # 3-panel QPF figure only
     python analysis/run.py storms/<storm>_<model>.yaml ets      # ETS curves + CSV only
 

@@ -1,8 +1,11 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|animation|ets|all]
+    python analysis/run.py <case.yaml> [parent|ets|all]
 
-Loads a StormCase from the YAML case file and runs the requested product(s).
+Loads a StormCase from the YAML case file and runs the requested product(s):
+  parent  the parent-domain QPF vs MRMS vs Stage IV 3-panel figure
+  ets     the combined parent+nest ETS-vs-threshold figure + CSV
+  all     both (default)
 """
 
 import sys
@@ -10,13 +13,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-COMMANDS = ("parent", "animation", "ets", "all")
+COMMANDS = ("parent", "ets", "all")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
-        print("usage: run.py <case.yaml> [parent|animation|ets|all]")
+        print("usage: run.py <case.yaml> [parent|ets|all]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -29,12 +32,9 @@ def parse_args(argv):
 def dispatch(case, command):
     """Run the requested product(s) for a loaded StormCase."""
     from parent_qpf import generate_parent_figure
-    from qpf_full_run import generate_animation
     from ets_full import compute_ets
     if command in ("parent", "all"):
         generate_parent_figure(case)
-    if command in ("animation", "all"):
-        generate_animation(case)
     if command in ("ets", "all"):
         compute_ets(case)
 
