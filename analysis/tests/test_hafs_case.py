@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FIX = Path(__file__).resolve().parent / "fixtures"
 
-from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain
+import numpy as np
+from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain, StormCase
 
 
 def test_decode_latlon():
@@ -51,6 +52,47 @@ def test_auto_domain_pads_track_bbox():
     lat_min, lat_max, lon_min, lon_max = auto_domain(track, pad_deg=2.0)
     assert lat_min == 14.8 and lat_max == 46.3
     assert lon_min == -86.1 and lon_max == -59.5
+
+
+def _toy_case():
+    track = [
+        (datetime(2024, 9, 24, 0), 16.8, -83.2),
+        (datetime(2024, 9, 24, 6), 17.8, -83.5),
+    ]
+    return StormCase(
+        run_dir=Path("/tmp/HFSA"), init_dt=datetime(2024, 9, 24, 0),
+        storm_name="Helene", model_label="HAFS-A",
+        domain=(15.0, 20.0, -90.0, -80.0), grid_res=1.0,
+        mask_radius_km=500.0, display_radius_km=750.0,
+        thresholds_mm=[1, 5], out_dir=Path("/tmp/out"),
+        mrms_cache_dir=Path("/tmp/mrms"), stage4_cache_dir=Path("/tmp/s4"),
+        fhours_filter=None, track=track, case_slug="helene_hfsa",
+        init_str="2024092400",
+    )
+
+
+def test_position_at_interpolates_and_clamps():
+    c = _toy_case()
+    # Midpoint between the two 6-hourly fixes.
+    lat, lon = c.position_at(datetime(2024, 9, 24, 3))
+    assert abs(lat - 17.3) < 1e-9 and abs(lon - (-83.35)) < 1e-9
+    # Before/after the track clamps to the endpoints.
+    assert c.position_at(datetime(2024, 9, 23, 0)) == (16.8, -83.2)
+    assert c.position_at(datetime(2024, 9, 25, 0)) == (17.8, -83.5)
+
+
+def test_fixed_grid_shape():
+    c = _toy_case()
+    grid_lat, grid_lon = c.fixed_grid()
+    # lon -90..-80 step 1 -> 11 cols; lat 15..20 step 1 -> 6 rows.
+    assert grid_lat.shape == (6, 11)
+    assert grid_lon.shape == (6, 11)
+
+
+def test_globs_use_init_str():
+    c = _toy_case()
+    assert c.parent_glob() == "**/*2024092400*parent.atm.f*.grb2"
+    assert c.storm_glob() == "**/*2024092400*storm.atm.f*.grb2"
 
 
 def _run_all():

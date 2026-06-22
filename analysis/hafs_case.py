@@ -5,7 +5,11 @@ tests off-Hercules, away from cfgrib/boto3/eccodes/cartopy.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
 
 
 def decode_latlon(token):
@@ -69,3 +73,53 @@ def auto_domain(track, pad_deg=2.0):
     lons = [lo for _, _, lo in track]
     return (min(lats) - pad_deg, max(lats) + pad_deg,
             min(lons) - pad_deg, max(lons) + pad_deg)
+
+
+@dataclass
+class StormCase:
+    run_dir: Path
+    init_dt: datetime
+    storm_name: str
+    model_label: str
+    domain: tuple          # (lat_min, lat_max, lon_min, lon_max)
+    grid_res: float
+    mask_radius_km: float
+    display_radius_km: float
+    thresholds_mm: list
+    out_dir: Path
+    mrms_cache_dir: Path
+    stage4_cache_dir: Path
+    fhours_filter: list
+    track: list            # [(valid_dt, lat, lon), ...]
+    case_slug: str
+    init_str: str
+
+    def position_at(self, valid_dt):
+        """Linear interpolation of the track to any time; clamps to endpoints."""
+        times = [t for t, _, _ in self.track]
+        lats = [la for _, la, _ in self.track]
+        lons = [lo for _, _, lo in self.track]
+        if valid_dt <= times[0]:
+            return lats[0], lons[0]
+        if valid_dt >= times[-1]:
+            return lats[-1], lons[-1]
+        for i in range(len(times) - 1):
+            if times[i] <= valid_dt <= times[i + 1]:
+                frac = ((valid_dt - times[i]).total_seconds()
+                        / (times[i + 1] - times[i]).total_seconds())
+                return (lats[i] + frac * (lats[i + 1] - lats[i]),
+                        lons[i] + frac * (lons[i + 1] - lons[i]))
+        return lats[-1], lons[-1]
+
+    def fixed_grid(self):
+        """Fixed lat/lon verification/plot mesh from domain + grid_res."""
+        lat_min, lat_max, lon_min, lon_max = self.domain
+        fixed_lons = np.arange(lon_min, lon_max + self.grid_res, self.grid_res)
+        fixed_lats = np.arange(lat_min, lat_max + self.grid_res, self.grid_res)
+        return np.meshgrid(fixed_lons, fixed_lats)[::-1]  # (grid_lat, grid_lon)
+
+    def parent_glob(self):
+        return f"**/*{self.init_str}*parent.atm.f*.grb2"
+
+    def storm_glob(self):
+        return f"**/*{self.init_str}*storm.atm.f*.grb2"
