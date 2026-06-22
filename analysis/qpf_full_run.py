@@ -1,5 +1,5 @@
 """
-HAFS-A QPF vs MRMS QPE — full-run animation
+HAFS QPF vs MRMS QPE — full-run animation
 
 HAFS uses a storm-following grid that moves with the TC, so each frame's
 domain shifts.  The nest's 0->fhour "cumulative" tp is accumulated per grid
@@ -16,24 +16,25 @@ time in sync with the forecast hours being plotted.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/qpf_full_run.py
+    python analysis/qpf_full_run.py cases/helene_hfsa.yaml
 
 To stitch frames into an MP4:
     ffmpeg -r 4 -pattern_type glob -i '<OUT_DIR>/qpf_frame_*.png' \
            -vf "format=rgb24" -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p \
            <OUT_DIR>/../qpf_animation.mp4
-
-Config:
-    Edit the CONFIG block below to match your run.
 """
 
 import logging
 import re
+import sys
 import gzip
 import io
 import warnings
 from pathlib import Path
 from datetime import datetime, timedelta
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hafs_case import StormCase  # noqa: F401
 
 import boto3
 from botocore import UNSIGNED
@@ -55,62 +56,8 @@ for _log in ["cfgrib", "cfgrib.messages", "cfgrib.xarray_store", "cfgrib.dataset
     logging.getLogger(_log).setLevel(logging.CRITICAL)
 
 
-# =============================================================================
-# CONFIG — edit these for your run
-# =============================================================================
-
-HAFS_RUN_DIR = Path(
-    "/work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSA"
-)
-INIT_STR = "2024092400"
-FILE_GLOB = f"**/*{INIT_STR}*storm.atm.f*.grb2"
-OUT_DIR = Path("/work2/noaa/aoml-hafs1/suchit/qpf_frames")
-FHOURS_FILTER = None
-MRMS_CACHE_DIR = Path("/tmp/mrms_cache")
-CFGRIB_IDX_DIR = Path("/work2/noaa/aoml-hafs1/suchit/.cfgrib_idx")
-
-# Fixed grid resolution in degrees (~5 km)
-GRID_RES = 0.05
-
-# Fixed domain covering Helene's full track (Gulf → Appalachians).
-# Set to None to auto-detect from a first pass over all HAFS files (slow).
-FIXED_DOMAIN = (15.0, 42.0, -100.0, -60.0)  # (lat_min, lat_max, lon_min, lon_max)
-
-# =============================================================================
-
-INIT_DT = datetime.strptime(INIT_STR, "%Y%m%d%H")
 MRMS_BUCKET = "noaa-mrms-pds"
 MRMS_PRODUCT = "MultiSensor_QPE_01H_Pass2_00.00"
-
-# Helene NHC best track (6-hourly): (datetime, lat, lon)
-# Source: NHC best track AL092024
-TC_TRACK_6H = [
-    (datetime(2024, 9, 24,  0),  16.8, -83.2),
-    (datetime(2024, 9, 24,  6),  17.8, -83.5),
-    (datetime(2024, 9, 24, 12),  19.0, -83.8),
-    (datetime(2024, 9, 24, 18),  20.4, -84.1),
-    (datetime(2024, 9, 25,  0),  21.8, -84.3),
-    (datetime(2024, 9, 25,  6),  23.3, -84.5),
-    (datetime(2024, 9, 25, 12),  24.9, -84.6),
-    (datetime(2024, 9, 25, 18),  26.8, -84.5),
-    (datetime(2024, 9, 26,  0),  28.8, -84.1),
-    (datetime(2024, 9, 26,  6),  30.7, -83.5),
-    (datetime(2024, 9, 26, 12),  32.5, -83.0),
-    (datetime(2024, 9, 26, 18),  34.2, -82.7),
-    (datetime(2024, 9, 27,  0),  35.8, -82.5),
-    (datetime(2024, 9, 27,  6),  37.0, -82.0),
-    (datetime(2024, 9, 27, 12),  38.3, -81.0),
-    (datetime(2024, 9, 27, 18),  39.5, -79.5),
-    (datetime(2024, 9, 28,  0),  40.7, -77.5),
-    (datetime(2024, 9, 28,  6),  41.8, -75.0),
-    (datetime(2024, 9, 28, 12),  42.8, -72.0),
-    (datetime(2024, 9, 28, 18),  43.5, -68.5),
-    (datetime(2024, 9, 29,  0),  44.0, -65.0),
-    (datetime(2024, 9, 29,  6),  44.3, -61.5),
-]
-
-# Only count MRMS QPE within this radius of the TC center (km)
-TC_MASK_RADIUS_KM = 500.0
 
 QPF_LEVELS = [0, 5, 10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500]
 QPF_COLORS = [
@@ -314,24 +261,6 @@ def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
 # TC track interpolation + MRMS mask
 # =============================================================================
 
-def tc_position_at(valid_dt):
-    """Linearly interpolate Helene's best track to any hour."""
-    times = [t for t, _, _ in TC_TRACK_6H]
-    lats  = [la for _, la, _ in TC_TRACK_6H]
-    lons  = [lo for _, _, lo in TC_TRACK_6H]
-    if valid_dt <= times[0]:
-        return lats[0], lons[0]
-    if valid_dt >= times[-1]:
-        return lats[-1], lons[-1]
-    for i in range(len(times) - 1):
-        if times[i] <= valid_dt <= times[i + 1]:
-            frac = (valid_dt - times[i]).total_seconds() / \
-                   (times[i + 1] - times[i]).total_seconds()
-            return lats[i] + frac * (lats[i+1] - lats[i]), \
-                   lons[i] + frac * (lons[i+1] - lons[i])
-    return lats[-1], lons[-1]
-
-
 def haversine_km(lat1, lon1, lat2_arr, lon2_arr):
     """Great-circle distance (km) from (lat1,lon1) to each point in arrays."""
     R = 6371.0
@@ -342,16 +271,15 @@ def haversine_km(lat1, lon1, lat2_arr, lon2_arr):
     return R * 2 * np.arcsin(np.sqrt(a))
 
 
-def apply_tc_mask(lats, lons, data, valid_dt):
-    """Zero out MRMS QPE beyond TC_MASK_RADIUS_KM from the TC center."""
-    tc_lat, tc_lon = tc_position_at(valid_dt)
-    # MRMS arrives as 1-D lat/lon vectors; HAFS as 2-D arrays.
+def apply_tc_mask(lats, lons, data, valid_dt, case):
+    """Zero out QPE beyond case.mask_radius_km from the TC center at valid_dt."""
+    tc_lat, tc_lon = case.position_at(valid_dt)
     if lats.ndim == 1 and lons.ndim == 1:
         lons_2d, lats_2d = np.meshgrid(lons, lats)
     else:
         lats_2d, lons_2d = lats, lons
     dist = haversine_km(tc_lat, tc_lon, lats_2d, lons_2d)
-    return np.where(dist <= TC_MASK_RADIUS_KM, data, 0.0)
+    return np.where(dist <= case.mask_radius_km, data, 0.0)
 
 
 # =============================================================================
@@ -405,10 +333,10 @@ def qpf_cmap():
     return cmap, norm
 
 
-def plot_frame(fhour, fixed_lons, fixed_lats, hafs_mm,
+def plot_frame(case, fhour, fixed_lons, fixed_lats, hafs_mm,
                mrms_lons, mrms_lats, mrms_mm,
                full_domain, out_path):
-    valid_dt = INIT_DT + timedelta(hours=fhour)
+    valid_dt = case.init_dt + timedelta(hours=fhour)
     lat_min, lat_max, lon_min, lon_max = full_domain
     cmap, norm = qpf_cmap()
 
@@ -433,9 +361,9 @@ def plot_frame(fhour, fixed_lons, fixed_lats, hafs_mm,
         transform=ccrs.PlateCarree(), extend="max",
     )
     axes[0].set_title(
-        f"HAFS-A Accumulated Precip\n"
-        f"Init {INIT_DT.strftime('%Y-%m-%d %HZ')} | "
-        f"F{fhour:03d} (0–{fhour}h, valid {valid_dt.strftime('%Y-%m-%d %HZ')})"
+        f"{case.model_label} Accumulated Precip\n"
+        f"Init {case.init_dt:%Y-%m-%d %HZ} | "
+        f"F{fhour:03d} (0–{fhour}h, valid {valid_dt:%Y-%m-%d %HZ})"
     )
 
     # MRMS
@@ -448,7 +376,7 @@ def plot_frame(fhour, fixed_lons, fixed_lats, hafs_mm,
         axes[1].set_title(
             f"MRMS MultiSensor QPE (Pass2)\n"
             f"{fhour}h accumulation "
-            f"({INIT_DT.strftime('%Y-%m-%d %HZ')} – {valid_dt.strftime('%Y-%m-%d %HZ')})"
+            f"({case.init_dt:%Y-%m-%d %HZ} – {valid_dt:%Y-%m-%d %HZ})"
         )
     else:
         axes[1].text(0.5, 0.5, "MRMS data unavailable",
@@ -458,8 +386,8 @@ def plot_frame(fhour, fixed_lons, fixed_lats, hafs_mm,
     plt.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
                  ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
     fig.suptitle(
-        f"Hurricane Helene — HAFS-A QPF vs MRMS QPE | "
-        f"F{fhour:03d} ending {valid_dt.strftime('%Y-%m-%d %HZ')}",
+        f"{case.storm_name} — {case.model_label} QPF vs MRMS QPE | "
+        f"F{fhour:03d} ending {valid_dt:%Y-%m-%d %HZ}",
         fontsize=13, y=1.01,
     )
     plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
@@ -470,76 +398,57 @@ def plot_frame(fhour, fixed_lons, fixed_lats, hafs_mm,
 # Main
 # =============================================================================
 
-def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    MRMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def generate_animation(case):
+    case.out_dir.mkdir(parents=True, exist_ok=True)
+    case.mrms_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"HAFS run dir : {HAFS_RUN_DIR}")
-    print(f"Init time    : {INIT_DT.strftime('%Y-%m-%d %HZ')}")
-    print(f"Output dir   : {OUT_DIR}")
+    print(f"HAFS run dir : {case.run_dir}")
+    print(f"Init time    : {case.init_dt:%Y-%m-%d %HZ}")
+    print(f"Output dir   : {case.out_dir}")
 
-    file_pairs = discover_files(HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER)
+    file_pairs = discover_files(case.run_dir, case.storm_glob(),
+                                case.fhours_filter)
     if not file_pairs:
-        print(f"\nNo files found matching {FILE_GLOB} in {HAFS_RUN_DIR}")
+        print(f"\nNo files found matching {case.storm_glob()} in {case.run_dir}")
         return
     print(f"\nFound {len(file_pairs)} HAFS files")
     max_fhour = file_pairs[-1][0]
 
     # ------------------------------------------------------------------
-    # Determine fixed domain — use hardcoded value if set, otherwise do
-    # a first pass over all files (slower but automatic).
+    # Fixed domain from case (auto-domain resolved in from_yaml).
     # ------------------------------------------------------------------
-    if FIXED_DOMAIN is not None:
-        full_domain = FIXED_DOMAIN
-        lat_min_all, lat_max_all, lon_min_all, lon_max_all = full_domain
-        print(f"\nUsing hardcoded domain: lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
-              f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
-    else:
-        print("\nFirst pass: scanning all HAFS files for full domain extent ...")
-        lat_min_all, lat_max_all = 90.0, -90.0
-        lon_min_all, lon_max_all = 180.0, -180.0
-        for fhour, filepath in file_pairs:
-            try:
-                lats, lons, _ = load_hafs_precip(filepath)
-                lat_min_all = min(lat_min_all, float(np.nanmin(lats)))
-                lat_max_all = max(lat_max_all, float(np.nanmax(lats)))
-                lon_min_all = min(lon_min_all, float(np.nanmin(lons)))
-                lon_max_all = max(lon_max_all, float(np.nanmax(lons)))
-            except Exception as e:
-                print(f"  F{fhour:03d} scan failed: {e}")
-        lat_min_all -= 0.5
-        lat_max_all += 0.5
-        lon_min_all -= 0.5
-        lon_max_all += 0.5
-        full_domain = (lat_min_all, lat_max_all, lon_min_all, lon_max_all)
-        print(f"  Full domain : lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
-              f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
+    full_domain = case.domain
+    lat_min_all, lat_max_all, lon_min_all, lon_max_all = full_domain
+    print(f"\nUsing domain: lat [{lat_min_all:.1f}, {lat_max_all:.1f}]  "
+          f"lon [{lon_min_all:.1f}, {lon_max_all:.1f}]")
 
-    fixed_lons = np.arange(lon_min_all, lon_max_all + GRID_RES, GRID_RES)
-    fixed_lats = np.arange(lat_min_all, lat_max_all + GRID_RES, GRID_RES)
+    fixed_lons = np.arange(lon_min_all, lon_max_all + case.grid_res,
+                           case.grid_res)
+    fixed_lats = np.arange(lat_min_all, lat_max_all + case.grid_res,
+                           case.grid_res)
     grid_lon, grid_lat = np.meshgrid(fixed_lons, fixed_lats)
-    print(f"  Fixed grid  : {grid_lat.shape[0]}×{grid_lat.shape[1]} "
-          f"at {GRID_RES}° resolution")
+    print(f"  Fixed grid  : {grid_lat.shape[0]}x{grid_lat.shape[1]} "
+          f"at {case.grid_res} deg resolution")
 
     # ------------------------------------------------------------------
     # Pre-download all MRMS 1H files and crop to the fixed domain.
     # ------------------------------------------------------------------
-    valid_end = INIT_DT + timedelta(hours=max_fhour)
-    print(f"\nPre-caching MRMS 1H QPE: hours 1–{max_fhour} "
-          f"(up to {valid_end.strftime('%Y-%m-%d %HZ')}) ...")
+    valid_end = case.init_dt + timedelta(hours=max_fhour)
+    print(f"\nPre-caching MRMS 1H QPE: hours 1-{max_fhour} "
+          f"(up to {valid_end:%Y-%m-%d %HZ}) ...")
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
     mrms_hourly = {}
     for h in range(1, max_fhour + 1):
-        t = INIT_DT + timedelta(hours=h)
+        t = case.init_dt + timedelta(hours=h)
         try:
-            lat, lon, data = load_mrms_hour(s3, t, MRMS_CACHE_DIR)
+            lat, lon, data = load_mrms_hour(s3, t, case.mrms_cache_dir)
             clat, clon, cdata = crop_to_domain(lat, lon, data,
                                                lat_min_all, lat_max_all,
                                                lon_min_all, lon_max_all)
             mrms_hourly[h] = (clat, clon, cdata)
             if h % 12 == 0 or h == max_fhour:
-                print(f"  cached h{h:03d}/{max_fhour} ({t.strftime('%Y-%m-%d %HZ')})")
+                print(f"  cached h{h:03d}/{max_fhour} ({t:%Y-%m-%d %HZ})")
         except Exception as e:
             print(f"  h{h:03d} unavailable: {e}")
 
@@ -559,16 +468,18 @@ def main():
     mrms_running_total = None
     last_mrms_h = 0
 
-    # Growing TC swath on the fixed grid (union of 500 km circles along the
-    # track so far).  HAFS is accumulated unmasked but DISPLAYED masked to this
-    # swath, so both panels show only Helene's rain — not predecessor/frontal
-    # precip the large moving nest also contains.  Seed with the init position.
+    # Growing TC swath on the fixed grid (union of mask_radius_km circles
+    # along the track so far).  HAFS is accumulated unmasked but DISPLAYED
+    # masked to this swath, so both panels show only the storm's rain — not
+    # predecessor/frontal precip the large moving nest also contains.
+    # Seed with the init position.
     hafs_swath = np.zeros(grid_lat.shape, dtype=bool)
-    t0lat, t0lon = tc_position_at(INIT_DT)
-    hafs_swath |= haversine_km(t0lat, t0lon, grid_lat, grid_lon) <= TC_MASK_RADIUS_KM
+    t0lat, t0lon = case.position_at(case.init_dt)
+    hafs_swath |= (haversine_km(t0lat, t0lon, grid_lat, grid_lon)
+                   <= case.mask_radius_km)
 
     for fhour, filepath in file_pairs:
-        out_path = OUT_DIR / f"qpf_frame_{fhour:03d}.png"
+        out_path = case.out_dir / f"qpf_frame_{fhour:03d}.png"
 
         # Update the HAFS event total regardless of whether we skip the PNG.
         # We select the cumulative 0->fhour tp record; fmax stamps the latest
@@ -594,15 +505,15 @@ def main():
 
         # Advance the TC swath and accumulate MRMS for the new hours.  The MRMS
         # mask and the HAFS swath both use the interpolated track position, so
-        # the two panels share an identical Helene-only footprint.
+        # the two panels share an identical storm-only footprint.
         for h in range(last_mrms_h + 1, fhour + 1):
-            valid_dt_h = INIT_DT + timedelta(hours=h)
-            tlat, tlon = tc_position_at(valid_dt_h)
+            valid_dt_h = case.init_dt + timedelta(hours=h)
+            tlat, tlon = case.position_at(valid_dt_h)
             hafs_swath |= (haversine_km(tlat, tlon, grid_lat, grid_lon)
-                           <= TC_MASK_RADIUS_KM)
+                           <= case.mask_radius_km)
             if h in mrms_hourly:
                 clat, clon, data = mrms_hourly[h]
-                data = apply_tc_mask(clat, clon, data, valid_dt_h)
+                data = apply_tc_mask(clat, clon, data, valid_dt_h, case)
                 if mrms_running_total is None:
                     mrms_running_total = np.zeros_like(data)
                 mrms_running_total += data
@@ -617,7 +528,7 @@ def main():
 
         print(f"  F{fhour:03d} ({filepath.name}) ...", end=" ", flush=True)
         plot_frame(
-            fhour,
+            case, fhour,
             fixed_lons, fixed_lats, hafs_display,
             mrms_lons, mrms_lats, mrms_running_total,
             full_domain, out_path,
@@ -627,12 +538,13 @@ def main():
                     if mrms_running_total is not None else float("nan"))
         print(f"saved  (HAFS max {hafs_max:.0f} mm | MRMS max {mrms_max:.0f} mm)")
 
-    print(f"\nAll frames written to {OUT_DIR}")
+    print(f"\nAll frames written to {case.out_dir}")
     print("\nTo make an MP4:")
-    print(f"  ffmpeg -r 4 -pattern_type glob -i '{OUT_DIR}/qpf_frame_*.png' \\")
+    print(f"  ffmpeg -r 4 -pattern_type glob -i '{case.out_dir}/qpf_frame_*.png' \\")
     print(f'         -vf "format=rgb24" -vcodec mpeg4 -q:v 3 -pix_fmt yuv420p '
-          f"{OUT_DIR}/../qpf_animation.mp4")
+          f"{case.out_dir}/../qpf_animation.mp4")
 
 
 if __name__ == "__main__":
-    main()
+    from hafs_case import from_yaml
+    generate_animation(from_yaml(sys.argv[1]))
