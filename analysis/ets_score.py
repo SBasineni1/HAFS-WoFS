@@ -1,15 +1,15 @@
 """
-Equitable Threat Score (ETS / Gilbert Skill Score) for HAFS-A QPF vs MRMS QPE.
+Equitable Threat Score (ETS / Gilbert Skill Score) for HAFS QPF vs MRMS QPE.
 
-For the full Helene event (0–Nh accumulation) this script:
-  1. Builds the HAFS-A storm-total precip on a fixed lat/lon grid by taking the
+For the full event (0-Nh accumulation) this script:
+  1. Builds the HAFS storm-total precip on a fixed lat/lon grid by taking the
      running max of every forecast-hour's storm-nest tp field (same approach as
      the animation, so accumulation sticks to geography as the nest moves).
   2. Accumulates the matching MRMS 1H QPE over the same window and regrids it
      onto the identical fixed grid.
-  3. Restricts verification to the TC rainfall swath — grid points within
-     TC_MASK_RADIUS_KM of Helene's best track at any hour — so non-Helene
-     synoptic rain doesn't pollute the contingency tables.
+  3. Restricts verification to the TC rainfall swath -- grid points within
+     mask_radius_km of the best track at any hour -- so non-TC synoptic rain
+     doesn't pollute the contingency tables.
   4. For a set of rainfall thresholds, builds the 2x2 contingency table
      (a=hits, b=false alarms, c=misses, d=correct negatives) and computes
 
@@ -22,7 +22,7 @@ ETS ranges from -1/3 to 1; 0 = no skill over random, 1 = perfect.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/ets_score.py
+    python analysis/ets_score.py cases/helene_hfsa.yaml
 
 Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
 """
@@ -45,18 +45,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from qpf_full_run import (
-    HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER, FIXED_DOMAIN, GRID_RES,
-    TC_MASK_RADIUS_KM, INIT_DT, OUT_DIR, MRMS_CACHE_DIR,
     MRMS_BUCKET, MRMS_PRODUCT,
     discover_files, hafs_event_total,
-    tc_position_at, haversine_km, load_mrms_hour,
+    haversine_km, load_mrms_hour,
 )
+from hafs_case import from_yaml
 
 # Rainfall thresholds (mm) at which to evaluate skill.
+# Kept as a module constant so ets_full.py can import it as a fallback default.
 THRESHOLDS_MM = [1, 5, 10, 25, 50, 75, 100, 150, 200, 250]
-
-ETS_PNG = OUT_DIR.parent / "ets_helene_hfsa.png"
-ETS_CSV = OUT_DIR.parent / "ets_helene_hfsa.csv"
 
 
 def regrid_mrms_to_fixed(mlat, mlon, mdata, grid_lat, grid_lon):
@@ -80,16 +77,16 @@ def regrid_mrms_to_fixed(mlat, mlon, mdata, grid_lat, grid_lon):
     return interp(pts).reshape(grid_lat.shape)
 
 
-def build_mrms_total(max_fhour, grid_lat, grid_lon):
+def build_mrms_total(case, max_fhour, grid_lat, grid_lon):
     """Accumulate MRMS 1H QPE over 1..max_fhour on its native grid, then regrid."""
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
     mrms_sum = None
     mlat = mlon = None
     for h in range(1, max_fhour + 1):
-        t = INIT_DT + timedelta(hours=h)
+        t = case.init_dt + timedelta(hours=h)
         try:
-            lat, lon, data = load_mrms_hour(s3, t, MRMS_CACHE_DIR)
+            lat, lon, data = load_mrms_hour(s3, t, case.mrms_cache_dir)
             if mrms_sum is None:
                 mlat, mlon = lat, lon
                 mrms_sum = np.zeros_like(data)
@@ -103,13 +100,13 @@ def build_mrms_total(max_fhour, grid_lat, grid_lon):
     return regrid_mrms_to_fixed(mlat, mlon, mrms_sum, grid_lat, grid_lon)
 
 
-def tc_swath_mask(max_fhour, grid_lat, grid_lon):
-    """Boolean mask: grid points within TC_MASK_RADIUS_KM of the track at any hour."""
+def tc_swath_mask(case, max_fhour, grid_lat, grid_lon):
+    """Boolean mask: grid points within case.mask_radius_km of the track at any hour."""
     swath = np.zeros(grid_lat.shape, dtype=bool)
     for h in range(0, max_fhour + 1):
-        tlat, tlon = tc_position_at(INIT_DT + timedelta(hours=h))
+        tlat, tlon = case.position_at(case.init_dt + timedelta(hours=h))
         dist = haversine_km(tlat, tlon, grid_lat, grid_lon)
-        swath |= dist <= TC_MASK_RADIUS_KM
+        swath |= dist <= case.mask_radius_km
     return swath
 
 
@@ -133,31 +130,30 @@ def contingency_scores(fcst, obs, threshold):
                 ets=ets, bias=bias, pod=pod, far=far, csi=csi)
 
 
-def main():
-    file_pairs = discover_files(HAFS_RUN_DIR, FILE_GLOB, FHOURS_FILTER)
+def compute_ets_single(case):
+    """Compute ETS for a single storm case (HAFS QPF vs MRMS QPE)."""
+    file_pairs = discover_files(case.run_dir, case.storm_glob(), case.fhours_filter)
     if not file_pairs:
-        print(f"No files matching {FILE_GLOB} in {HAFS_RUN_DIR}")
+        print(f"No files matching {case.storm_glob()} in {case.run_dir}")
         return
     max_fhour = file_pairs[-1][0]
     print(f"HAFS files   : {len(file_pairs)} (through F{max_fhour:03d})")
-    print(f"Init time    : {INIT_DT.strftime('%Y-%m-%d %HZ')}")
-    print(f"Accumulation : 0–{max_fhour}h")
+    print(f"Init time    : {case.init_dt.strftime('%Y-%m-%d %HZ')}")
+    print(f"Accumulation : 0-{max_fhour}h")
 
-    lat_min, lat_max, lon_min, lon_max = FIXED_DOMAIN
-    fixed_lons = np.arange(lon_min, lon_max + GRID_RES, GRID_RES)
-    fixed_lats = np.arange(lat_min, lat_max + GRID_RES, GRID_RES)
-    grid_lon, grid_lat = np.meshgrid(fixed_lons, fixed_lats)
-    print(f"Fixed grid   : {grid_lat.shape[0]}x{grid_lat.shape[1]} @ {GRID_RES}deg")
+    grid_lat, grid_lon = case.fixed_grid()
+    print(f"Fixed grid   : {grid_lat.shape[0]}x{grid_lat.shape[1]} "
+          f"@ {case.grid_res}deg")
 
     print("\nBuilding HAFS storm-total (accumulation-aware) ...")
     hafs_total, apcp_mode = hafs_event_total(file_pairs, grid_lat, grid_lon)
     print(f"  HAFS APCP mode: {apcp_mode}")
 
     print("\nAccumulating + regridding MRMS QPE ...")
-    mrms_total = build_mrms_total(max_fhour, grid_lat, grid_lon)
+    mrms_total = build_mrms_total(case, max_fhour, grid_lat, grid_lon)
 
     print("\nBuilding TC verification swath ...")
-    swath = tc_swath_mask(max_fhour, grid_lat, grid_lon)
+    swath = tc_swath_mask(case, max_fhour, grid_lat, grid_lon)
 
     valid = swath & np.isfinite(mrms_total)
     n_valid = int(np.sum(valid))
@@ -166,7 +162,7 @@ def main():
     if n_valid == 0:
         print("  Swath points:", int(np.sum(swath)),
               "| finite MRMS points:", int(np.sum(np.isfinite(mrms_total))))
-        print("  No overlapping valid points — check MRMS lon/lat alignment.")
+        print("  No overlapping valid points -- check MRMS lon/lat alignment.")
         return
 
     fcst = np.nan_to_num(hafs_total[valid], nan=0.0)
@@ -179,7 +175,7 @@ def main():
           f"{'ETS':>7} {'bias':>6} {'POD':>6} {'FAR':>6} {'CSI':>6}")
     print("-" * 78)
     rows = []
-    for thr in THRESHOLDS_MM:
+    for thr in case.thresholds_mm:
         s = contingency_scores(fcst, obs, thr)
         rows.append(s)
         print(f"{s['threshold']:>7} {s['a']:>8} {s['b']:>8} {s['c']:>8} "
@@ -188,12 +184,13 @@ def main():
     print("=" * 78)
 
     # CSV
-    ETS_CSV.parent.mkdir(parents=True, exist_ok=True)
-    with open(ETS_CSV, "w", newline="") as fh:
+    ets_csv = case.out_dir / f"ets_{case.case_slug}.csv"
+    case.out_dir.mkdir(parents=True, exist_ok=True)
+    with open(ets_csv, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)
-    print(f"\nSaved table: {ETS_CSV}")
+    print(f"\nSaved table: {ets_csv}")
 
     # Plot ETS (and frequency bias) vs threshold
     thr = [r["threshold"] for r in rows]
@@ -223,17 +220,18 @@ def main():
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
 
+    ets_png = case.out_dir / f"ets_{case.case_slug}.png"
     ax1.set_title(
-        f"Hurricane Helene — HAFS-A vs MRMS QPE\n"
-        f"ETS by threshold | 0–{max_fhour}h accumulation | "
-        f"init {INIT_DT.strftime('%Y-%m-%d %HZ')} | "
-        f"TC swath ≤{TC_MASK_RADIUS_KM:.0f} km"
+        f"Hurricane {case.storm_name} — {case.model_label} vs MRMS QPE\n"
+        f"ETS by threshold | 0-{max_fhour}h accumulation | "
+        f"init {case.init_dt.strftime('%Y-%m-%d %HZ')} | "
+        f"TC swath <={case.mask_radius_km:.0f} km"
     )
     fig.tight_layout()
-    fig.savefig(ETS_PNG, dpi=140, bbox_inches="tight", facecolor="white")
+    fig.savefig(ets_png, dpi=140, bbox_inches="tight", facecolor="white")
     plt.close(fig)
-    print(f"Saved plot : {ETS_PNG}")
+    print(f"Saved plot : {ets_png}")
 
 
 if __name__ == "__main__":
-    main()
+    compute_ets_single(from_yaml(sys.argv[1]))
