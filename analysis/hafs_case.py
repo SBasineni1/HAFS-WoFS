@@ -26,6 +26,25 @@ def decode_latlon(token):
     return value
 
 
+_ATCF_STOPLIST = frozenset({
+    "NEQ", "SEQ", "AAA", "XX", "L", "M", "D", "S", "N", "E", "W",
+    "TS", "HU", "TD", "DB", "SD", "SS", "EX", "LO", "WV", "TY", "ST",
+})
+
+
+def _extract_storm_name(cols):
+    """Scan columns from the end for the storm name.
+
+    Returns the first (from end) all-alpha token of length >= 3 that is
+    NOT a known ATCF code word, title-cased.  Returns None if not found.
+    """
+    for token in reversed(cols):
+        if len(token) >= 3 and re.fullmatch(r"[A-Za-z]+", token):
+            if token.upper() not in _ATCF_STOPLIST:
+                return token.title()
+    return None
+
+
 def parse_atcfunix(path):
     """Parse a HAFS .atcfunix track file.
 
@@ -51,9 +70,9 @@ def parse_atcfunix(path):
                 init_dt = warn
             if tau not in by_tau:
                 by_tau[tau] = (warn + timedelta(hours=tau), lat, lon)
-            # Storm name: trailing alpha field (index 27 in standard atcfunix).
-            if name is None and len(cols) > 27 and re.fullmatch(r"[A-Za-z]+", cols[27]):
-                name = cols[27].title()
+            # Storm name: robust reverse scan for last all-alpha token.
+            if name is None:
+                name = _extract_storm_name(cols)
     track = [by_tau[t] for t in sorted(by_tau)]
     return name, init_dt, track
 
@@ -129,8 +148,31 @@ class StormCase:
 _DEFAULT_THRESHOLDS = [1, 5, 10, 25, 50, 75, 100, 150, 200, 250]
 
 
+def _is_aggregate_track(path):
+    """True if *path* looks like a cyclone-00 aggregate track.
+
+    Checks the filename for '00l'/'00e'/'00c'/'00w' (case-insensitive),
+    then falls back to reading the first data line's cyclone-number field.
+    """
+    fname = path.name.lower()
+    if re.search(r"00[lecw]", fname):
+        return True
+    try:
+        with open(path) as fh:
+            for line in fh:
+                cols = [c.strip() for c in line.split(",")]
+                if len(cols) >= 2:
+                    return cols[1] == "00"
+    except OSError:
+        pass
+    return False
+
+
 def find_atcfunix(run_dir):
-    """First *.atcfunix under run_dir, else FileNotFoundError naming the dir."""
+    """Best *.atcfunix under run_dir, deprioritizing aggregate (00) tracks.
+
+    Raises FileNotFoundError naming the dir when no file matches.
+    """
     hits = sorted(Path(run_dir).glob("**/*.atcfunix"))
     if not hits:
         raise FileNotFoundError(
@@ -138,7 +180,22 @@ def find_atcfunix(run_dir):
             f"Add an explicit 'track', 'init', and 'domain' to the YAML to run "
             f"without one."
         )
-    return hits[0]
+    if len(hits) == 1:
+        print(f"Using track file: {hits[0]}")
+        return hits[0]
+    # Multiple files: deprioritize aggregate (cyclone 00) tracks.
+    real = [p for p in hits if not _is_aggregate_track(p)]
+    if real:
+        skipped = len(hits) - len(real)
+        print(f"Found {len(hits)} atcfunix files; skipped {skipped} "
+              f"aggregate track(s).")
+        choice = real[0]
+    else:
+        print(f"Found {len(hits)} atcfunix files (all appear aggregate); "
+              f"using first sorted.")
+        choice = hits[0]
+    print(f"Using track file: {choice}")
+    return choice
 
 
 def from_yaml(yaml_path):
@@ -150,8 +207,25 @@ def from_yaml(yaml_path):
         raise KeyError(f"'run_dir' is required in {yaml_path}")
     run_dir = Path(cfg["run_dir"])
 
-    atcf_path = find_atcfunix(run_dir)
+    # Explicit atcfunix path from YAML, or auto-discover.
+    if cfg.get("atcfunix"):
+        atcf_path = Path(cfg["atcfunix"])
+        if not atcf_path.is_absolute():
+            atcf_path = run_dir / atcf_path
+        if not atcf_path.exists():
+            raise FileNotFoundError(
+                f"Explicit atcfunix path does not exist: {atcf_path}"
+            )
+        print(f"Using track file: {atcf_path}")
+    else:
+        atcf_path = find_atcfunix(run_dir)
     name, init_from_atcf, track = parse_atcfunix(atcf_path)
+
+    if not track:
+        raise ValueError(
+            f"Parsed 0 track fixes from {atcf_path}; "
+            f"cannot derive domain/position."
+        )
 
     # init: YAML override (YYYYMMDDHH) else from atcfunix.
     if cfg.get("init"):

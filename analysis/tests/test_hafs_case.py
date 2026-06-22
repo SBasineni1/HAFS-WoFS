@@ -161,6 +161,80 @@ def test_find_atcfunix_missing_raises():
         shutil.rmtree(tmpdir)
 
 
+def test_parse_atcfunix_realistic_wind_radii():
+    """Fix 2: storm name found even when wind-radii columns push it past index 27."""
+    name, init_dt, track = parse_atcfunix(FIX / "helene_realistic.atcfunix")
+    assert name == "Helene"
+    assert init_dt == datetime(2024, 9, 24, 0)
+    # Same first three track points as the simple fixture (deduped by TAU).
+    assert track[0] == (datetime(2024, 9, 24, 0), 16.8, -83.2)
+    assert track[1] == (datetime(2024, 9, 24, 6), 17.8, -83.5)
+    assert track[2] == (datetime(2024, 9, 24, 12), 19.0, -83.8)
+    assert len(track) == 5
+
+
+def test_find_atcfunix_skips_aggregate():
+    """Fix 1: with aggregate (00L) + real (09L), find_atcfunix picks the real one."""
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        # Aggregate track (cyclone 00)
+        agg = tmpdir / "hafs.2024092400.00l.atcfunix"
+        agg.write_text(
+            "AL, 00, 2024092400, 03, HFSA, 000, 168N, 832W, 65, 985\n"
+        )
+        # Real track (cyclone 09)
+        real = tmpdir / "hafs.2024092400.09l.atcfunix"
+        real.write_text(
+            "AL, 09, 2024092400, 03, HFSA, 000, 168N, 832W, 65, 985\n"
+        )
+        chosen = find_atcfunix(tmpdir)
+        assert chosen == real, f"Expected {real}, got {chosen}"
+    finally:
+        shutil.rmtree(tmpdir)
+
+
+def test_from_yaml_explicit_atcfunix():
+    """Fix 1: YAML 'atcfunix' key overrides auto-discovery."""
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        run_dir = tmpdir / "helene" / "HFSA"
+        run_dir.mkdir(parents=True)
+        # Put the fixture in a non-standard location.
+        target = run_dir / "subdir"
+        target.mkdir()
+        shutil.copy(FIX / "helene.atcfunix", target / "my_track.atcfunix")
+        yaml_path = tmpdir / "explicit.yaml"
+        yaml_path.write_text(
+            f"run_dir: {run_dir}\n"
+            f"atcfunix: subdir/my_track.atcfunix\n"
+        )
+        case = from_yaml(yaml_path)
+        assert case.storm_name == "Helene"
+        assert case.init_dt == datetime(2024, 9, 24, 0)
+        assert len(case.track) == 5
+    finally:
+        shutil.rmtree(tmpdir)
+
+
+def test_from_yaml_empty_track_raises():
+    """Fix 4: atcfunix with no valid data lines raises ValueError."""
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        run_dir = tmpdir / "HFSA"
+        run_dir.mkdir(parents=True)
+        bad = run_dir / "bad.atcfunix"
+        bad.write_text("# no valid data lines here\ngarbage,line\n")
+        yaml_path = tmpdir / "bad_case.yaml"
+        yaml_path.write_text(f"run_dir: {run_dir}\n")
+        try:
+            from_yaml(yaml_path)
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "0 track fixes" in str(e)
+    finally:
+        shutil.rmtree(tmpdir)
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

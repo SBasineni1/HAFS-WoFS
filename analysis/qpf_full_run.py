@@ -16,7 +16,7 @@ time in sync with the forecast hours being plotted.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/qpf_full_run.py cases/helene_hfsa.yaml
+    python analysis/qpf_full_run.py storms/helene_hfsa.yaml
 
 To stitch frames into an MP4:
     ffmpeg -r 4 -pattern_type glob -i '<OUT_DIR>/qpf_frame_*.png' \

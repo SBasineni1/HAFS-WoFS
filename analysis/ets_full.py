@@ -10,7 +10,7 @@ plumbing from ets_score.py. The existing ets_score.py is left untouched.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/ets_full.py cases/helene_hfsa.yaml
+    python analysis/ets_full.py storms/helene_hfsa.yaml
 """
 
 import sys

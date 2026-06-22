@@ -22,7 +22,7 @@ honest and viewer-consistent.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/parent_qpf.py cases/helene_hfsa.yaml
+    python analysis/parent_qpf.py storms/helene_hfsa.yaml
 
 Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
 """

@@ -22,7 +22,7 @@ ETS ranges from -1/3 to 1; 0 = no skill over random, 1 = perfect.
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/ets_score.py cases/helene_hfsa.yaml
+    python analysis/ets_score.py storms/helene_hfsa.yaml
 
 Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
 """
