@@ -4,13 +4,13 @@ MRMS QPE and NCEP Stage IV QPE over the TC rainfall swath.
 
 Produces one combined ETS-vs-threshold figure (4 curves: parent/nest x
 MRMS/StageIV) and one combined CSV. Reuses all GRIB2/MRMS/Stage IV plumbing
-from qpf_full_run.py and parent_qpf.py, and the contingency math + MRMS
-plumbing from ets_score.py. The existing ets_score.py is left untouched.
+from hafs_common.py and parent_qpf.py, and the contingency math + MRMS
+plumbing from ets_score.py.
 
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/ets_full.py storms/helene_hfsa.yaml
+    python analysis/run.py storms/helene_hfsa.yaml ets
 """
 
 import sys
@@ -26,7 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from qpf_full_run import discover_files, hafs_event_total
+from hafs_common import discover_files, hafs_event_total
 from ets_score import (
     contingency_scores, build_mrms_total, tc_swath_mask,
 )

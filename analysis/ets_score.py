@@ -1,55 +1,36 @@
 """
-Equitable Threat Score (ETS / Gilbert Skill Score) for HAFS QPF vs MRMS QPE.
+ETS helper functions for HAFS QPF verification against MRMS QPE.
 
-For the full event (0-Nh accumulation) this script:
-  1. Builds the HAFS storm-total precip on a fixed lat/lon grid by taking the
-     running max of every forecast-hour's storm-nest tp field (same approach as
-     the animation, so accumulation sticks to geography as the nest moves).
-  2. Accumulates the matching MRMS 1H QPE over the same window and regrids it
-     onto the identical fixed grid.
-  3. Restricts verification to the TC rainfall swath -- grid points within
-     mask_radius_km of the best track at any hour -- so non-TC synoptic rain
-     doesn't pollute the contingency tables.
-  4. For a set of rainfall thresholds, builds the 2x2 contingency table
-     (a=hits, b=false alarms, c=misses, d=correct negatives) and computes
+Provides the contingency math and the MRMS/swath plumbing that ets_full.py
+composes into the combined parent+nest ETS figure:
+  * regrid_mrms_to_fixed — bilinear MRMS → fixed mesh
+  * build_mrms_total     — accumulate MRMS 1H QPE over the window, then regrid
+  * tc_swath_mask        — boolean mask of points within mask_radius_km of the
+                           track at any hour (the verification footprint)
+  * contingency_scores   — 2x2 table + ETS / bias / POD / FAR / CSI at one threshold
 
-        ETS = (a - a_ref) / (a + b + c - a_ref),   a_ref = (a+b)(a+c)/n
-
-     along with frequency bias, POD, FAR, and CSI for context.
+    ETS = (a - a_ref) / (a + b + c - a_ref),   a_ref = (a+b)(a+c)/n
 
 ETS ranges from -1/3 to 1; 0 = no skill over random, 1 = perfect.
 
-Usage (on Hercules):
-    module load miniconda3
-    conda activate hafs
-    python analysis/ets_score.py storms/helene_hfsa.yaml
-
-Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
+Not a runnable script — use run.py (the full parent+nest ETS lives in ets_full.py).
 """
 
 import sys
-import csv
 from pathlib import Path
 from datetime import timedelta
 
 # Make the sibling module importable no matter the cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import numpy as np
+from scipy.interpolate import RegularGridInterpolator
+
+from hafs_common import haversine_km, load_mrms_hour
+
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
-import numpy as np
-from scipy.interpolate import RegularGridInterpolator
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-from qpf_full_run import (
-    MRMS_BUCKET, MRMS_PRODUCT,
-    discover_files, hafs_event_total,
-    haversine_km, load_mrms_hour,
-)
-from hafs_case import from_yaml
 
 # Rainfall thresholds (mm) at which to evaluate skill.
 # Kept as a module constant so ets_full.py can import it as a fallback default.
@@ -128,110 +109,3 @@ def contingency_scores(fcst, obs, threshold):
     csi = a / (a + b + c) if (a + b + c) > 0 else np.nan
     return dict(threshold=threshold, a=a, b=b, c=c, d=d,
                 ets=ets, bias=bias, pod=pod, far=far, csi=csi)
-
-
-def compute_ets_single(case):
-    """Compute ETS for a single storm case (HAFS QPF vs MRMS QPE)."""
-    file_pairs = discover_files(case.run_dir, case.storm_glob(), case.fhours_filter)
-    if not file_pairs:
-        print(f"No files matching {case.storm_glob()} in {case.run_dir}")
-        return
-    max_fhour = file_pairs[-1][0]
-    print(f"HAFS files   : {len(file_pairs)} (through F{max_fhour:03d})")
-    print(f"Init time    : {case.init_dt.strftime('%Y-%m-%d %HZ')}")
-    print(f"Accumulation : 0-{max_fhour}h")
-
-    grid_lat, grid_lon = case.fixed_grid()
-    print(f"Fixed grid   : {grid_lat.shape[0]}x{grid_lat.shape[1]} "
-          f"@ {case.grid_res}deg")
-
-    print("\nBuilding HAFS storm-total (accumulation-aware) ...")
-    hafs_total, apcp_mode = hafs_event_total(file_pairs, grid_lat, grid_lon)
-    print(f"  HAFS APCP mode: {apcp_mode}")
-
-    print("\nAccumulating + regridding MRMS QPE ...")
-    mrms_total = build_mrms_total(case, max_fhour, grid_lat, grid_lon)
-
-    print("\nBuilding TC verification swath ...")
-    swath = tc_swath_mask(case, max_fhour, grid_lat, grid_lon)
-
-    valid = swath & np.isfinite(mrms_total)
-    n_valid = int(np.sum(valid))
-    print(f"  Verification points: {n_valid:,} "
-          f"({100*n_valid/swath.size:.1f}% of grid)")
-    if n_valid == 0:
-        print("  Swath points:", int(np.sum(swath)),
-              "| finite MRMS points:", int(np.sum(np.isfinite(mrms_total))))
-        print("  No overlapping valid points -- check MRMS lon/lat alignment.")
-        return
-
-    fcst = np.nan_to_num(hafs_total[valid], nan=0.0)
-    obs = np.nan_to_num(mrms_total[valid], nan=0.0)
-    print(f"  HAFS max {fcst.max():.0f} mm | MRMS max {obs.max():.0f} mm "
-          f"(within swath)")
-
-    print("\n" + "=" * 78)
-    print(f"{'thr(mm)':>7} {'hits':>8} {'FA':>8} {'miss':>8} {'corrNeg':>10} "
-          f"{'ETS':>7} {'bias':>6} {'POD':>6} {'FAR':>6} {'CSI':>6}")
-    print("-" * 78)
-    rows = []
-    for thr in case.thresholds_mm:
-        s = contingency_scores(fcst, obs, thr)
-        rows.append(s)
-        print(f"{s['threshold']:>7} {s['a']:>8} {s['b']:>8} {s['c']:>8} "
-              f"{s['d']:>10} {s['ets']:>7.3f} {s['bias']:>6.2f} "
-              f"{s['pod']:>6.2f} {s['far']:>6.2f} {s['csi']:>6.2f}")
-    print("=" * 78)
-
-    # CSV
-    ets_csv = case.out_dir / f"ets_{case.case_slug}.csv"
-    case.out_dir.mkdir(parents=True, exist_ok=True)
-    with open(ets_csv, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
-    print(f"\nSaved table: {ets_csv}")
-
-    # Plot ETS (and frequency bias) vs threshold
-    thr = [r["threshold"] for r in rows]
-    ets = [r["ets"] for r in rows]
-    bias = [r["bias"] for r in rows]
-
-    fig, ax1 = plt.subplots(figsize=(9, 6))
-    ax1.plot(thr, ets, "o-", color="#1f77b4", lw=2, label="ETS")
-    ax1.axhline(0, color="gray", ls="--", lw=0.8)
-    ax1.set_xscale("log")
-    ax1.set_xticks(thr)
-    ax1.get_xaxis().set_major_formatter(plt.ScalarFormatter())
-    ax1.set_xlabel("Rainfall threshold (mm)")
-    ax1.set_ylabel("Equitable Threat Score (ETS)", color="#1f77b4")
-    ax1.tick_params(axis="y", labelcolor="#1f77b4")
-    ax1.set_ylim(-0.05, 1.0)
-    ax1.grid(True, which="both", ls=":", alpha=0.4)
-
-    ax2 = ax1.twinx()
-    ax2.plot(thr, bias, "s--", color="#d62728", lw=1.5, alpha=0.8,
-             label="Frequency bias")
-    ax2.axhline(1.0, color="#d62728", ls=":", lw=0.8, alpha=0.6)
-    ax2.set_ylabel("Frequency bias", color="#d62728")
-    ax2.tick_params(axis="y", labelcolor="#d62728")
-
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-
-    ets_png = case.out_dir / f"ets_{case.case_slug}.png"
-    ax1.set_title(
-        f"Hurricane {case.storm_name} — {case.model_label} vs MRMS QPE\n"
-        f"ETS by threshold | 0-{max_fhour}h accumulation | "
-        f"init {case.init_dt.strftime('%Y-%m-%d %HZ')} | "
-        f"TC swath <={case.mask_radius_km:.0f} km"
-    )
-    fig.tight_layout()
-    fig.savefig(ets_png, dpi=140, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    print(f"Saved plot : {ets_png}")
-
-
-if __name__ == "__main__":
-    compute_ets_single(from_yaml(sys.argv[1]))

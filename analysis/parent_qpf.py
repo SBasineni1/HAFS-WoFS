@@ -14,17 +14,18 @@ Two observed-QPE references are shown for comparison of rainfall amounts:
     Stage IV is gauge+radar and is the classic verification benchmark; it is
     CONUS-only, so Helene's Gulf/Caribbean rain won't appear in that panel.
 
-Contrast with qpf_full_run.py (2-km moving NEST: high-res but its cumulative
-tp is storm-relative, so it needs 3-h bucket summing and still scallops with
-storm speed).  The parent domain is coarser (lower peaks) but geographically
-honest and viewer-consistent.
+The 2-km moving NEST is higher-res but its cumulative tp is storm-relative
+(needs per-interval bucket summing and still scallops with storm speed); the
+parent domain is coarser (lower peaks) but geographically honest and viewer-
+consistent.  The nest total is still computed for the ETS comparison (see
+ets_full.py via hafs_common.hafs_event_total).
 
 Usage (on Hercules):
     module load miniconda3
     conda activate hafs
-    python analysis/parent_qpf.py storms/helene_hfsa.yaml
+    python analysis/run.py storms/helene_hfsa.yaml parent
 
-Reuses the GRIB2 / MRMS plumbing from qpf_full_run.py.
+Reuses the GRIB2 / MRMS plumbing from hafs_common.py.
 """
 
 import re
@@ -49,7 +50,7 @@ import matplotlib.colors as mcolors
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
-from qpf_full_run import (
+from hafs_common import (
     QPF_LEVELS, QPF_COLORS,
     read_hafs_tp_records, haversine_km, load_mrms_hour, crop_to_domain,
 )
