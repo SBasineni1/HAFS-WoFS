@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 
 def decode_latlon(token):
@@ -123,3 +124,61 @@ class StormCase:
 
     def storm_glob(self):
         return f"**/*{self.init_str}*storm.atm.f*.grb2"
+
+
+_DEFAULT_THRESHOLDS = [1, 5, 10, 25, 50, 75, 100, 150, 200, 250]
+
+
+def find_atcfunix(run_dir):
+    """First *.atcfunix under run_dir, else FileNotFoundError naming the dir."""
+    hits = sorted(Path(run_dir).glob("**/*.atcfunix"))
+    if not hits:
+        raise FileNotFoundError(
+            f"No .atcfunix track file under {run_dir} (glob '**/*.atcfunix'). "
+            f"Add an explicit 'track', 'init', and 'domain' to the YAML to run "
+            f"without one."
+        )
+    return hits[0]
+
+
+def from_yaml(yaml_path):
+    """Load a StormCase from a YAML case file (run_dir required)."""
+    yaml_path = Path(yaml_path)
+    with open(yaml_path) as fh:
+        cfg = yaml.safe_load(fh) or {}
+    if "run_dir" not in cfg:
+        raise KeyError(f"'run_dir' is required in {yaml_path}")
+    run_dir = Path(cfg["run_dir"])
+
+    atcf_path = find_atcfunix(run_dir)
+    name, init_from_atcf, track = parse_atcfunix(atcf_path)
+
+    # init: YAML override (YYYYMMDDHH) else from atcfunix.
+    if cfg.get("init"):
+        init_dt = datetime.strptime(str(cfg["init"]), "%Y%m%d%H")
+    else:
+        init_dt = init_from_atcf
+    init_str = init_dt.strftime("%Y%m%d%H")
+
+    domain = tuple(cfg["domain"]) if cfg.get("domain") else auto_domain(track)
+    out_dir = (Path(cfg["out_dir"]) if cfg.get("out_dir")
+               else Path("analysis/output") / yaml_path.stem)
+
+    return StormCase(
+        run_dir=run_dir,
+        init_dt=init_dt,
+        storm_name=cfg.get("storm_name") or name or "Storm",
+        model_label=cfg.get("model_label") or detect_model(run_dir),
+        domain=domain,
+        grid_res=float(cfg.get("grid_res", 0.05)),
+        mask_radius_km=float(cfg.get("mask_radius_km", 500.0)),
+        display_radius_km=float(cfg.get("display_radius_km", 750.0)),
+        thresholds_mm=cfg.get("thresholds_mm", list(_DEFAULT_THRESHOLDS)),
+        out_dir=out_dir,
+        mrms_cache_dir=Path(cfg.get("mrms_cache_dir", "/tmp/mrms_cache")),
+        stage4_cache_dir=Path(cfg.get("stage4_cache_dir", "/tmp/stage4_cache")),
+        fhours_filter=cfg.get("fhours"),
+        track=track,
+        case_slug=yaml_path.stem,
+        init_str=init_str,
+    )

@@ -3,7 +3,9 @@
 Run directly:   python3 analysis/tests/test_hafs_case.py
 Or via pytest:  pytest analysis/tests/test_hafs_case.py -v
 """
+import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FIX = Path(__file__).resolve().parent / "fixtures"
 
 import numpy as np
-from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain, StormCase
+from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain, StormCase, from_yaml, find_atcfunix
 
 
 def test_decode_latlon():
@@ -93,6 +95,68 @@ def test_globs_use_init_str():
     c = _toy_case()
     assert c.parent_glob() == "**/*2024092400*parent.atm.f*.grb2"
     assert c.storm_glob() == "**/*2024092400*storm.atm.f*.grb2"
+
+
+def test_from_yaml_minimal_autoderives():
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        run_dir = tmpdir / "helene" / "HFSA"
+        run_dir.mkdir(parents=True)
+        shutil.copy(FIX / "helene.atcfunix", run_dir / "helene.atcfunix")
+        yaml_path = tmpdir / "helene_hfsa.yaml"
+        yaml_path.write_text(f"run_dir: {run_dir}\n")
+
+        case = from_yaml(yaml_path)
+
+        assert case.case_slug == "helene_hfsa"
+        assert case.model_label == "HAFS-A"          # auto from path
+        assert case.init_dt == datetime(2024, 9, 24, 0)  # from atcfunix
+        assert case.storm_name == "Helene"            # from atcfunix name field
+        assert case.init_str == "2024092400"
+        assert case.grid_res == 0.05                  # default
+        assert case.mask_radius_km == 500.0           # default
+        assert case.thresholds_mm == [1, 5, 10, 25, 50, 75, 100, 150, 200, 250]
+        assert case.out_dir == Path("analysis/output/helene_hfsa")
+        # Domain auto-derived from the track bbox (non-empty, sane ordering).
+        lat_min, lat_max, lon_min, lon_max = case.domain
+        assert lat_min < lat_max and lon_min < lon_max
+    finally:
+        shutil.rmtree(tmpdir)
+
+
+def test_from_yaml_overrides_win():
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        run_dir = tmpdir / "HFSA"
+        run_dir.mkdir(parents=True)
+        shutil.copy(FIX / "helene.atcfunix", run_dir / "x.atcfunix")
+        yaml_path = tmpdir / "case.yaml"
+        yaml_path.write_text(
+            f"run_dir: {run_dir}\n"
+            "storm_name: Test Storm\n"
+            "domain: [15.0, 42.0, -100.0, -60.0]\n"
+            "mask_radius_km: 300\n"
+            "out_dir: /tmp/custom_out\n"
+        )
+        case = from_yaml(yaml_path)
+        assert case.storm_name == "Test Storm"
+        assert case.domain == (15.0, 42.0, -100.0, -60.0)
+        assert case.mask_radius_km == 300.0
+        assert case.out_dir == Path("/tmp/custom_out")
+    finally:
+        shutil.rmtree(tmpdir)
+
+
+def test_find_atcfunix_missing_raises():
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        try:
+            find_atcfunix(tmpdir)
+            assert False, "expected FileNotFoundError"
+        except FileNotFoundError as e:
+            assert str(tmpdir) in str(e)
+    finally:
+        shutil.rmtree(tmpdir)
 
 
 def _run_all():
