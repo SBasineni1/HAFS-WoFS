@@ -18,7 +18,10 @@ The new statistics, chosen with the user:
 
 The fair-comparison footprint, chosen with the user: a single shared swath built
 from the **NHC best track** (observed), so both models are verified over where
-the storm actually went.
+the storm actually went. For each (forecast, observation) pair, both models are
+scored over the COMMON coverage (best-track swath intersected with where ALL
+models have valid/finite data), so `n` is identical for every forecast type
+including the nest — points where only one model's nest has data are excluded.
 
 This is additive: the existing per-case path (`run.py <case.yaml> parent|ets|all`)
 is untouched.

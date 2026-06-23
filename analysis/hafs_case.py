@@ -95,6 +95,27 @@ def auto_domain(track, pad_deg=2.0):
             min(lons) - pad_deg, max(lons) + pad_deg)
 
 
+def position_on_track(track, valid_dt):
+    """Linear interpolation of a [(dt, lat, lon), ...] track to any time.
+
+    Clamps to the endpoints outside the track's time span.
+    """
+    times = [t for t, _, _ in track]
+    lats = [la for _, la, _ in track]
+    lons = [lo for _, _, lo in track]
+    if valid_dt <= times[0]:
+        return lats[0], lons[0]
+    if valid_dt >= times[-1]:
+        return lats[-1], lons[-1]
+    for i in range(len(times) - 1):
+        if times[i] <= valid_dt <= times[i + 1]:
+            frac = ((valid_dt - times[i]).total_seconds()
+                    / (times[i + 1] - times[i]).total_seconds())
+            return (lats[i] + frac * (lats[i + 1] - lats[i]),
+                    lons[i] + frac * (lons[i + 1] - lons[i]))
+    return lats[-1], lons[-1]
+
+
 @dataclass
 class StormCase:
     run_dir: Path
@@ -116,20 +137,7 @@ class StormCase:
 
     def position_at(self, valid_dt):
         """Linear interpolation of the track to any time; clamps to endpoints."""
-        times = [t for t, _, _ in self.track]
-        lats = [la for _, la, _ in self.track]
-        lons = [lo for _, _, lo in self.track]
-        if valid_dt <= times[0]:
-            return lats[0], lons[0]
-        if valid_dt >= times[-1]:
-            return lats[-1], lons[-1]
-        for i in range(len(times) - 1):
-            if times[i] <= valid_dt <= times[i + 1]:
-                frac = ((valid_dt - times[i]).total_seconds()
-                        / (times[i + 1] - times[i]).total_seconds())
-                return (lats[i] + frac * (lats[i + 1] - lats[i]),
-                        lons[i] + frac * (lons[i + 1] - lons[i]))
-        return lats[-1], lons[-1]
+        return position_on_track(self.track, valid_dt)
 
     def fixed_grid(self):
         """Fixed lat/lon verification/plot mesh from domain + grid_res."""

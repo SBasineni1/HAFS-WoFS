@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FIX = Path(__file__).resolve().parent / "fixtures"
 
 import numpy as np
-from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain, StormCase, from_yaml, find_atcfunix
+from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain, StormCase, from_yaml, find_atcfunix, position_on_track
 
 
 def test_decode_latlon():
@@ -71,6 +71,17 @@ def _toy_case():
         fhours_filter=None, track=track, case_slug="helene_hfsa",
         init_str="2024092400",
     )
+
+
+def test_position_on_track_interpolates_and_clamps():
+    track = [
+        (datetime(2024, 9, 24, 0), 16.8, -83.2),
+        (datetime(2024, 9, 24, 6), 17.8, -83.5),
+    ]
+    lat, lon = position_on_track(track, datetime(2024, 9, 24, 3))
+    assert abs(lat - 17.3) < 1e-9 and abs(lon - (-83.35)) < 1e-9
+    assert position_on_track(track, datetime(2024, 9, 23, 0)) == (16.8, -83.2)
+    assert position_on_track(track, datetime(2024, 9, 25, 0)) == (17.8, -83.5)
 
 
 def test_position_at_interpolates_and_clamps():

@@ -141,7 +141,42 @@ Then `python analysis/run.py storms/<storm>_<model>.yaml all`.
 
 ---
 
-## 5. How to read the ETS plot
+## 5. Comparing HFSA vs HFSB (head-to-head)
+
+To score two configs of the same storm against each other over one **shared,
+fair verification swath** (the NHC best track), use a comparison config.
+
+1. Fetch the storm's NHC best track (ATCF b-deck) once:
+
+       wget https://ftp.nhc.noaa.gov/atcf/archive/<year>/b<basin><cy><year>.dat.gz
+       gunzip b<basin><cy><year>.dat.gz
+       # Helene 2024 -> bal092024.dat
+
+2. Edit `storms/helene_compare.yaml` (or copy it) to point `cases:` at the two
+   case YAMLs and `best_track:` at the file you just downloaded.
+
+3. Run:
+
+       python analysis/run.py storms/helene_compare.yaml compare
+
+Outputs in `out_dir`:
+
+- `compare_categorical_<label>.png` — ETS / CSI / frequency bias vs threshold,
+  HFSA vs HFSB (parent solid, nest dashed), vs MRMS
+- `compare_fss_<label>.png` — Fractions Skill Score vs neighborhood scale
+- `compare_categorical_<label>.csv`, `compare_fss_<label>.csv` — the full matrix
+  (both forecasts × MRMS & Stage IV, all thresholds/scales)
+
+Both models are scored over the identical best-track swath, so their point
+counts (`n`) match and the comparison is apples-to-apples. For the nest
+comparison, both models are scored over the common coverage of both nests
+(points where only one nest has valid data are excluded), so nest `n` also
+matches. This step runs ~2× a single `ets` run (it builds both models' nest
+totals).
+
+---
+
+## 6. How to read the ETS plot
 
 Each `ets_full_<case>.png` has four curves for one model run:
 
