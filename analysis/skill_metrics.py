@@ -40,6 +40,8 @@ def fractions_skill_score(fcst, obs, threshold, scale, mask):
     ob = (obs >= threshold).astype(float)
     ff = uniform_filter(fb, size=scale, mode="constant", cval=0.0)
     of = uniform_filter(ob, size=scale, mode="constant", cval=0.0)
+    if not mask.any():
+        return np.nan
     mse = np.mean((ff[mask] - of[mask]) ** 2)
     ref = np.mean(ff[mask] ** 2) + np.mean(of[mask] ** 2)
     return 1.0 - mse / ref if ref > 0 else np.nan

@@ -168,8 +168,11 @@ Outputs in `out_dir`:
   (both forecasts × MRMS & Stage IV, all thresholds/scales)
 
 Both models are scored over the identical best-track swath, so their point
-counts (`n`) match and the comparison is apples-to-apples. This step runs ~2× a
-single `ets` run (it builds both models' nest totals).
+counts (`n`) match and the comparison is apples-to-apples. For the nest
+comparison, both models are scored over the common coverage of both nests
+(points where only one nest has valid data are excluded), so nest `n` also
+matches. This step runs ~2× a single `ets` run (it builds both models' nest
+totals).
 
 ---
 

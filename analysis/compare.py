@@ -52,22 +52,33 @@ def load_comparison(path):
 
 
 def score_matrix(models, swath, thresholds, fss_scales, grid_res):
-    """Score every model x forecast x obs over the shared swath.
-
-    Returns (cat_rows, fss_rows). None observations are skipped.
-    """
+    """Score every model x forecast x obs over the shared swath, restricted to
+    the COMMON coverage across models so n is identical for all models in a
+    given (forecast, observation) pair (fair head-to-head). Returns
+    (cat_rows, fss_rows). A (forecast, obs) pair is skipped if ANY model's obs
+    for it is None (e.g. Stage IV unavailable for one model)."""
     cat_rows, fss_rows = [], []
-    for m in models:
-        for fname, fgrid in m["forecasts"].items():
-            for oname, ogrid in m["obs"].items():
-                if ogrid is None:
-                    continue
-                rows, _ = score_pair(fgrid, ogrid, swath, thresholds,
+    fnames = list(models[0]["forecasts"].keys())
+    onames = list(models[0]["obs"].keys())
+    for fname in fnames:
+        for oname in onames:
+            ogrids = [m["obs"].get(oname) for m in models]
+            if any(o is None for o in ogrids):
+                continue
+            # Common coverage: swath AND every model's forecast finite AND obs finite.
+            common = swath.copy()
+            for m in models:
+                common &= np.isfinite(m["forecasts"][fname])
+            for o in ogrids:
+                common &= np.isfinite(o)
+            for m in models:
+                fgrid = m["forecasts"][fname]
+                ogrid = m["obs"][oname]
+                rows, _ = score_pair(fgrid, ogrid, common, thresholds,
                                      contingency_scores)
                 for r in rows:
                     cat_rows.append({"model": m["name"], "forecast": fname,
                                      "observation": oname, **r})
-                vmask = swath & np.isfinite(fgrid) & np.isfinite(ogrid)
                 ff = np.nan_to_num(fgrid, nan=0.0)
                 oo = np.nan_to_num(ogrid, nan=0.0)
                 for thr in thresholds:
@@ -77,7 +88,7 @@ def score_matrix(models, swath, thresholds, fss_scales, grid_res):
                             "observation": oname, "threshold": thr,
                             "scale_cells": sc,
                             "scale_km": round(sc * grid_res * 111.0, 1),
-                            "fss": fractions_skill_score(ff, oo, thr, sc, vmask),
+                            "fss": fractions_skill_score(ff, oo, thr, sc, common),
                         })
     return cat_rows, fss_rows
 
@@ -193,6 +204,7 @@ def generate_comparison(cfg):
     if a.mask_radius_km != b.mask_radius_km:
         raise ValueError(
             f"cases must share mask_radius_km ({a.mask_radius_km} vs {b.mask_radius_km})")
+    # None or empty list -> fall back to the cases' default thresholds.
     thresholds = cfg["thresholds_mm"] or a.thresholds_mm
     grid_lat, grid_lon = a.fixed_grid()
 

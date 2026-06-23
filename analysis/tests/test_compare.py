@@ -82,6 +82,22 @@ def _toy_rows():
     return score_matrix(models, swath, [5.0, 25.0, 50.0], [1, 3], 0.05)
 
 
+def test_score_matrix_common_n_across_models_when_footprints_differ():
+    obs = np.full((6, 6), 10.0)
+    a_grid = np.full((6, 6), 20.0); a_grid[4:, :] = np.nan   # finite rows 0-3 (24)
+    b_grid = np.full((6, 6), 20.0); b_grid[5:, :] = np.nan   # finite rows 0-4 (30)
+    swath = np.ones((6, 6), dtype=bool)
+    models = [
+        {"name": "HFSA", "forecasts": {"nest": a_grid}, "obs": {"MRMS": obs}},
+        {"name": "HFSB", "forecasts": {"nest": b_grid}, "obs": {"MRMS": obs}},
+    ]
+    cat, _ = score_matrix(models, swath, [5.0], [1], 0.05)
+    by_model = {r["model"]: r for r in cat if r["threshold"] == 5.0}
+    na = sum(by_model["HFSA"][k] for k in "abcd")
+    nb = sum(by_model["HFSB"][k] for k in "abcd")
+    assert na == nb == 24   # intersection = rows 0-3 = 24 cells
+
+
 def test_plots_write_png_files():
     cat, fss = _toy_rows()
     d = Path(tempfile.mkdtemp())
