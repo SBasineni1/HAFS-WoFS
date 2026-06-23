@@ -1,0 +1,19 @@
+# Conda environment for the HAFS QPF/ETS framework.
+#   conda env create -f environment.yml
+#   conda activate hafs
+name: hafs
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - numpy
+  - scipy
+  - pyyaml
+  - boto3
+  - botocore
+  - cfgrib
+  - eccodes
+  - python-eccodes
+  - xarray
+  - matplotlib
+  - cartopy
