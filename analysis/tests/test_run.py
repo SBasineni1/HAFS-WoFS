@@ -24,6 +24,11 @@ def test_parse_args_rejects_unknown_command():
         pass
 
 
+def test_parse_args_accepts_compare():
+    yaml_path, command = run.parse_args(["storms/helene_compare.yaml", "compare"])
+    assert command == "compare"
+
+
 def _run_all():
     """Discover and run all test_* functions."""
     import inspect

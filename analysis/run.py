@@ -1,11 +1,12 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|ets|all]
+    python analysis/run.py <case.yaml> [parent|ets|all|compare]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
   parent  the parent-domain QPF vs MRMS vs Stage IV 3-panel figure
   ets     the combined parent+nest ETS-vs-threshold figure + CSV
   all     both (default)
+  compare HFSA-vs-HFSB rainfall comparison
 """
 
 import sys
@@ -13,13 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-COMMANDS = ("parent", "ets", "all")
+COMMANDS = ("parent", "ets", "all", "compare")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
-        print("usage: run.py <case.yaml> [parent|ets|all]")
+        print("usage: run.py <case.yaml> [parent|ets|all|compare]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -40,8 +41,12 @@ def dispatch(case, command):
 
 
 def main(argv):
-    from hafs_case import from_yaml
     yaml_path, command = parse_args(argv)
+    if command == "compare":
+        from compare import load_comparison, generate_comparison
+        generate_comparison(load_comparison(yaml_path))
+        return
+    from hafs_case import from_yaml
     case = from_yaml(yaml_path)
     print(f"Case   : {case.storm_name} ({case.model_label})")
     print(f"Init   : {case.init_dt:%Y-%m-%d %HZ}  | run_dir: {case.run_dir}")
