@@ -4,8 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import csv
 import numpy as np
-from compare import load_comparison, score_matrix, plot_categorical_compare, plot_fss_compare
+from compare import (load_comparison, score_matrix, plot_categorical_compare,
+                     plot_fss_compare, _model_colors, replot_from_csv)
 
 
 def _write(cfg_text):
@@ -73,13 +75,41 @@ def test_score_matrix_shapes_and_perfect_fss():
 def _toy_rows():
     g = np.zeros((12, 12)); g[4:8, 4:8] = 20.0
     swath = np.ones((12, 12), dtype=bool)
+    # Use the real model labels ("HAFS-A"/"HAFS-B") so the plots exercise the
+    # same names production uses — a regression guard for the color lookup.
     models = [
-        {"name": "HFSA", "forecasts": {"parent": g.copy(), "nest": g.copy()},
+        {"name": "HAFS-A", "forecasts": {"parent": g.copy(), "nest": g.copy()},
          "obs": {"MRMS": g.copy()}},
-        {"name": "HFSB", "forecasts": {"parent": g.copy(), "nest": g.copy()},
+        {"name": "HAFS-B", "forecasts": {"parent": g.copy(), "nest": g.copy()},
          "obs": {"MRMS": g.copy()}},
     ]
     return score_matrix(models, swath, [5.0, 25.0, 50.0], [1, 3], 0.05)
+
+
+def test_model_colors_distinct_and_not_gray():
+    # Real production labels must each get a distinct, non-gray color.
+    colors = _model_colors(["HAFS-A", "HAFS-B"])
+    assert colors["HAFS-A"] != colors["HAFS-B"]
+    assert "gray" not in (colors["HAFS-A"], colors["HAFS-B"])
+
+
+def test_replot_from_csv_regenerates_pngs():
+    cat, fss = _toy_rows()
+    d = Path(tempfile.mkdtemp())
+    cat_cols = ["model", "forecast", "observation", "threshold",
+                "a", "b", "c", "d", "ets", "csi", "bias", "pod", "far", "hss"]
+    fss_cols = ["model", "forecast", "observation", "threshold",
+                "scale_cells", "scale_km", "fss"]
+    with open(d / "compare_categorical_test.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cat_cols, extrasaction="ignore")
+        w.writeheader(); w.writerows(cat)
+    with open(d / "compare_fss_test.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fss_cols, extrasaction="ignore")
+        w.writeheader(); w.writerows(fss)
+    cfg = {"out_dir": d, "label": "Test", "fss_plot_thresholds": [25, 50]}
+    replot_from_csv(cfg)
+    assert (d / "compare_categorical_test.png").stat().st_size > 0
+    assert (d / "compare_fss_test.png").stat().st_size > 0
 
 
 def test_score_matrix_common_n_across_models_when_footprints_differ():
