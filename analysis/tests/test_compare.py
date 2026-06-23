@@ -10,7 +10,7 @@ from datetime import datetime
 import numpy as np
 from compare import (load_comparison, score_matrix, plot_categorical_compare,
                      plot_fss_compare, _model_colors, replot_from_csv,
-                     _check_same_init, _init_tag)
+                     _check_same_init, _init_tag, _plot_comparison)
 
 
 def _write(cfg_text):
@@ -96,23 +96,28 @@ def test_model_colors_distinct_and_not_gray():
     assert "gray" not in (colors["HAFS-A"], colors["HAFS-B"])
 
 
-def test_replot_from_csv_regenerates_pngs():
+def test_plot_comparison_writes_init_tagged_pngs():
     cat, fss = _toy_rows()
     d = Path(tempfile.mkdtemp())
-    cat_cols = ["model", "forecast", "observation", "threshold",
+    slug = "hurricane_helene_2024092400"
+    cat_cols = ["init", "model", "forecast", "observation", "threshold",
                 "a", "b", "c", "d", "ets", "csi", "bias", "pod", "far", "hss"]
-    fss_cols = ["model", "forecast", "observation", "threshold",
+    fss_cols = ["init", "model", "forecast", "observation", "threshold",
                 "scale_cells", "scale_km", "fss"]
-    with open(d / "compare_categorical_test.csv", "w", newline="") as fh:
+    for r in cat:
+        r["init"] = "2024092400"
+    for r in fss:
+        r["init"] = "2024092400"
+    with open(d / f"compare_categorical_{slug}.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cat_cols, extrasaction="ignore")
         w.writeheader(); w.writerows(cat)
-    with open(d / "compare_fss_test.csv", "w", newline="") as fh:
+    with open(d / f"compare_fss_{slug}.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fss_cols, extrasaction="ignore")
         w.writeheader(); w.writerows(fss)
-    cfg = {"out_dir": d, "label": "Test", "fss_plot_thresholds": [25, 50]}
-    replot_from_csv(cfg)
-    assert (d / "compare_categorical_test.png").stat().st_size > 0
-    assert (d / "compare_fss_test.png").stat().st_size > 0
+    from compare import _plot_comparison
+    _plot_comparison(d, slug, "Hurricane Helene (init 2024-09-24 00Z)", [25, 50])
+    assert (d / f"compare_categorical_{slug}.png").stat().st_size > 0
+    assert (d / f"compare_fss_{slug}.png").stat().st_size > 0
 
 
 def test_score_matrix_common_n_across_models_when_footprints_differ():
