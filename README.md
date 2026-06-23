@@ -108,6 +108,12 @@ ets_full_<case>.png       # ETS vs threshold: parent/nest × MRMS/Stage IV
 ets_full_<case>.csv       # the same scores as a table (a/b/c/d, ETS, bias, POD, FAR, CSI)
 ```
 
+> **Init tagging:** every output filename is automatically stamped with the run's
+> initialization time (e.g. `parent_qpf_helene_hfsa_2024092400.png`,
+> `ets_full_helene_hfsa_2024092400.csv`), so a storm's many init times never
+> overwrite each other. You don't need the init in the YAML name — it's added
+> automatically (and de-duplicated if you do include it).
+
 ### Pull results to your laptop
 
 ```bash
@@ -166,6 +172,11 @@ Outputs in `out_dir`:
 - `compare_fss_<label>.png` — Fractions Skill Score vs neighborhood scale
 - `compare_categorical_<label>.csv`, `compare_fss_<label>.csv` — the full matrix
   (both forecasts × MRMS & Stage IV, all thresholds/scales)
+
+The two cases must share an initialization time (the comparison errors if they
+don't). The comparison outputs are init-tagged too
+(`compare_categorical_hurricane_helene_2024092400.png`), and each CSV has a
+leading `init` column.
 
 Both models are scored over the identical best-track swath, so their point
 counts (`n`) match and the comparison is apples-to-apples. For the nest
