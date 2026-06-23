@@ -184,6 +184,25 @@ def _slug(label):
     return label.lower().replace(" ", "_")
 
 
+def _check_same_init(cases, case_paths):
+    """Raise ValueError naming both if the two comparison cases' inits differ."""
+    a, b = cases
+    if a.init_dt != b.init_dt:
+        raise ValueError(
+            f"comparison cases must share an init: {case_paths[0]} is "
+            f"{a.init_str}, {case_paths[1]} is {b.init_str}")
+
+
+def _init_tag(label, init_dt):
+    """(slug, title) tagged by init. slug = '<label-slug>_<YYYYMMDDHH>'
+    (de-duplicated); title = '<label> (init YYYY-MM-DD HHZ)'."""
+    init_str = init_dt.strftime("%Y%m%d%H")
+    base = _slug(label)
+    slug = base if init_str in base else f"{base}_{init_str}"
+    title = f"{label} (init {init_dt:%Y-%m-%d %HZ})"
+    return slug, title
+
+
 _CAT_NUM = ("threshold", "a", "b", "c", "d", "ets", "csi", "bias",
             "pod", "far", "hss")
 _FSS_NUM = ("threshold", "scale_cells", "scale_km", "fss")

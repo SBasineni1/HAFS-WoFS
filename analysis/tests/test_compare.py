@@ -5,9 +5,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import csv
+import types
+from datetime import datetime
 import numpy as np
 from compare import (load_comparison, score_matrix, plot_categorical_compare,
-                     plot_fss_compare, _model_colors, replot_from_csv)
+                     plot_fss_compare, _model_colors, replot_from_csv,
+                     _check_same_init, _init_tag)
 
 
 def _write(cfg_text):
@@ -138,6 +141,35 @@ def test_plots_write_png_files():
                      forecast="parent", plot_thresholds=(5.0, 25.0))
     assert cat_png.exists() and cat_png.stat().st_size > 0
     assert fss_png.exists() and fss_png.stat().st_size > 0
+
+
+def test_init_tag_appends_and_formats():
+    slug, title = _init_tag("Hurricane Helene", datetime(2024, 9, 24, 0))
+    assert slug == "hurricane_helene_2024092400"
+    assert title == "Hurricane Helene (init 2024-09-24 00Z)"
+
+
+def test_init_tag_dedups_when_label_has_init():
+    slug, _ = _init_tag("helene 2024092400", datetime(2024, 9, 24, 0))
+    assert slug == "helene_2024092400"   # not ..._2024092400_2024092400
+
+
+def test_check_same_init_passes_when_equal():
+    c = types.SimpleNamespace(init_dt=datetime(2024, 9, 24, 0),
+                              init_str="2024092400")
+    _check_same_init([c, c], ["a.yaml", "b.yaml"])   # no raise
+
+
+def test_check_same_init_raises_when_differ():
+    a = types.SimpleNamespace(init_dt=datetime(2024, 9, 24, 0),
+                              init_str="2024092400")
+    b = types.SimpleNamespace(init_dt=datetime(2024, 9, 24, 12),
+                              init_str="2024092412")
+    try:
+        _check_same_init([a, b], ["a.yaml", "b.yaml"])
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "2024092400" in str(e) and "2024092412" in str(e)
 
 
 def _run_all():
