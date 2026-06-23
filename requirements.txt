@@ -1,0 +1,13 @@
+# pip fallback for the HAFS QPF/ETS framework.
+# Prefer the conda env (environment.yml) — cfgrib/eccodes/cartopy need the
+# ecCodes C library + GEOS/PROJ, which conda-forge provides cleanly.
+numpy
+scipy
+pyyaml
+boto3
+botocore
+cfgrib
+eccodes
+xarray
+matplotlib
+cartopy
