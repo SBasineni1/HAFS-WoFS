@@ -27,3 +27,19 @@ def swath_from_track(track, grid_lat, grid_lon, radius_km, init_dt, max_fhour):
         tlat, tlon = position_on_track(track, t)
         swath |= haversine_km(tlat, tlon, grid_lat, grid_lon) <= radius_km
     return swath
+
+
+def fractions_skill_score(fcst, obs, threshold, scale, mask):
+    """FSS at one threshold and neighborhood size (scale, in grid cells).
+
+    FSS = 1 - MSE(Mf, Of) / (mean(Mf^2) + mean(Of^2)) over mask points, where
+    Mf/Of are neighborhood fractions of the binarized fields. NaN if there are
+    no events at this threshold anywhere (denominator 0).
+    """
+    fb = (fcst >= threshold).astype(float)
+    ob = (obs >= threshold).astype(float)
+    ff = uniform_filter(fb, size=scale, mode="constant", cval=0.0)
+    of = uniform_filter(ob, size=scale, mode="constant", cval=0.0)
+    mse = np.mean((ff[mask] - of[mask]) ** 2)
+    ref = np.mean(ff[mask] ** 2) + np.mean(of[mask] ** 2)
+    return 1.0 - mse / ref if ref > 0 else np.nan
