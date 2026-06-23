@@ -1,12 +1,13 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|ets|all|compare]
+    python analysis/run.py <case.yaml> [parent|ets|all|compare|replot]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
   parent  the parent-domain QPF vs MRMS vs Stage IV 3-panel figure
   ets     the combined parent+nest ETS-vs-threshold figure + CSV
   all     both (default)
-  compare HFSA-vs-HFSB rainfall comparison
+  compare HFSA-vs-HFSB rainfall comparison (takes a comparison YAML)
+  replot  redraw the comparison figures from existing CSVs (no recompute)
 """
 
 import sys
@@ -14,13 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-COMMANDS = ("parent", "ets", "all", "compare")
+COMMANDS = ("parent", "ets", "all", "compare", "replot")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
-        print("usage: run.py <case.yaml> [parent|ets|all|compare]")
+        print("usage: run.py <case.yaml> [parent|ets|all|compare|replot]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -42,9 +43,11 @@ def dispatch(case, command):
 
 def main(argv):
     yaml_path, command = parse_args(argv)
-    if command == "compare":
-        from compare import load_comparison, generate_comparison
-        generate_comparison(load_comparison(yaml_path))
+    if command in ("compare", "replot"):
+        from compare import (load_comparison, generate_comparison,
+                             replot_from_csv)
+        cfg = load_comparison(yaml_path)
+        (generate_comparison if command == "compare" else replot_from_csv)(cfg)
         return
     from hafs_case import from_yaml
     case = from_yaml(yaml_path)

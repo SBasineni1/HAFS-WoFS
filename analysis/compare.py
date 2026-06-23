@@ -93,9 +93,16 @@ def score_matrix(models, swath, thresholds, fss_scales, grid_res):
     return cat_rows, fss_rows
 
 
-_MODEL_COLOR = {"HFSA": "#1f77b4", "HFSB": "#d62728"}
+# Distinct color per model, assigned dynamically so colors appear regardless of
+# how the model is labelled ("HAFS-A"/"HAFS-B", "HFSA"/"HFSB", etc.).
+_PALETTE = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b"]
 _FCST_STYLE = {"parent": dict(ls="-", marker="o"),
                "nest": dict(ls="--", marker="s")}
+
+
+def _model_colors(models):
+    """Map each model name to a distinct palette color (sorted for stability)."""
+    return {m: _PALETTE[i % len(_PALETTE)] for i, m in enumerate(sorted(models))}
 
 
 def plot_categorical_compare(cat_rows, label, out_path, observation="MRMS"):
@@ -107,6 +114,7 @@ def plot_categorical_compare(cat_rows, label, out_path, observation="MRMS"):
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     models = sorted({r["model"] for r in rows})
     forecasts = sorted({r["forecast"] for r in rows})
+    colors = _model_colors(models)
     for ax, (key, title) in zip(axes, metrics):
         for mdl in models:
             for fc in forecasts:
@@ -116,7 +124,7 @@ def plot_categorical_compare(cat_rows, label, out_path, observation="MRMS"):
                 if not sub:
                     continue
                 ax.plot([r["threshold"] for r in sub], [r[key] for r in sub],
-                        color=_MODEL_COLOR.get(mdl, "gray"),
+                        color=colors[mdl],
                         **_FCST_STYLE.get(fc, dict(ls="-", marker="o")),
                         lw=2, label=f"{mdl} {fc}")
         ax.set_xscale("log")
@@ -128,8 +136,8 @@ def plot_categorical_compare(cat_rows, label, out_path, observation="MRMS"):
         else:
             ax.axhline(0.0, color="gray", ls=":", lw=0.8)
     axes[0].legend(loc="best", fontsize=8)
-    fig.suptitle(f"{label} — HFSA vs HFSB categorical skill (vs {observation})",
-                 fontsize=13)
+    fig.suptitle(f"{label} — {' vs '.join(models)} categorical skill "
+                 f"(vs {observation})", fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -143,6 +151,7 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
     fig, ax = plt.subplots(figsize=(9, 6))
     models = sorted({r["model"] for r in rows})
     thrs = sorted({r["threshold"] for r in rows})
+    colors = _model_colors(models)
     dashes = {t: (None if i == 0 else (4 + 2 * i, 2))
               for i, t in enumerate(thrs)}
     for mdl in models:
@@ -154,7 +163,7 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
                 continue
             line, = ax.plot([r["scale_km"] for r in sub],
                             [r["fss"] for r in sub],
-                            color=_MODEL_COLOR.get(mdl, "gray"),
+                            color=colors[mdl],
                             lw=2, marker="o",
                             label=f"{mdl}  {int(t)} mm")
             if dashes[t] is not None:
@@ -164,7 +173,8 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
     ax.set_ylim(0, 1)
     ax.grid(True, ls=":", alpha=0.4)
     ax.legend(loc="best", fontsize=9)
-    ax.set_title(f"{label} — HFSA vs HFSB FSS ({forecast} vs {observation})")
+    ax.set_title(f"{label} — {' vs '.join(models)} FSS "
+                 f"({forecast} vs {observation})")
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -172,6 +182,47 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
 
 def _slug(label):
     return label.lower().replace(" ", "_")
+
+
+_CAT_NUM = ("threshold", "a", "b", "c", "d", "ets", "csi", "bias",
+            "pod", "far", "hss")
+_FSS_NUM = ("threshold", "scale_cells", "scale_km", "fss")
+
+
+def _read_rows(path, numeric):
+    """Read a comparison CSV, casting numeric columns to float (NaN-aware)."""
+    rows = []
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            for k in numeric:
+                if k in r:
+                    try:
+                        r[k] = float(r[k])
+                    except (TypeError, ValueError):
+                        r[k] = float("nan")
+            rows.append(r)
+    return rows
+
+
+def replot_from_csv(cfg):
+    """Regenerate the comparison figures from the existing CSVs — no GRIB work.
+
+    Use after tweaking the plot styling, so you don't re-run the slow
+    accumulation: python analysis/run.py storms/<name>_compare.yaml replot
+    """
+    out_dir = cfg["out_dir"]
+    slug = _slug(cfg["label"])
+    cat_rows = _read_rows(out_dir / f"compare_categorical_{slug}.csv", _CAT_NUM)
+    fss_rows = _read_rows(out_dir / f"compare_fss_{slug}.csv", _FSS_NUM)
+    cat_png = out_dir / f"compare_categorical_{slug}.png"
+    fss_png = out_dir / f"compare_fss_{slug}.png"
+    plot_categorical_compare(cat_rows, cfg["label"], cat_png, observation="MRMS")
+    plot_fss_compare(fss_rows, cfg["label"], fss_png, observation="MRMS",
+                     forecast="parent",
+                     plot_thresholds=tuple(float(t)
+                                           for t in cfg["fss_plot_thresholds"]))
+    print(f"Replotted: {cat_png}")
+    print(f"Replotted: {fss_png}")
 
 
 def _build_model_fields(case, grid_lat, grid_lon, max_fhour):
