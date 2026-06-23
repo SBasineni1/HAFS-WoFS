@@ -17,6 +17,12 @@ import yaml
 from ets_full import score_pair
 from ets_score import contingency_scores
 from skill_metrics import fractions_skill_score
+from hafs_case import from_yaml
+from best_track import parse_bdeck
+from skill_metrics import swath_from_track
+from hafs_common import discover_files, hafs_event_total
+from ets_full import hafs_parent_total, stage4_on_fixed
+from ets_score import build_mrms_total
 
 _DEFAULT_FSS_SCALES = [1, 3, 5, 11, 21, 41]
 _DEFAULT_FSS_PLOT_THR = [10, 25, 50]
@@ -151,3 +157,100 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+
+
+def _slug(label):
+    return label.lower().replace(" ", "_")
+
+
+def _build_model_fields(case, grid_lat, grid_lon, max_fhour):
+    """Parent + nest forecast totals and MRMS + Stage IV obs on the common grid."""
+    file_pairs = discover_files(case.run_dir, case.storm_glob(),
+                                case.fhours_filter)
+    print(f"  {case.model_label}: {len(file_pairs)} storm files, nest total ...")
+    nest_total, _ = hafs_event_total(file_pairs, grid_lat, grid_lon)
+    print(f"  {case.model_label}: parent total ...")
+    parent_total = hafs_parent_total(case, grid_lat, grid_lon)
+    print(f"  {case.model_label}: MRMS total ...")
+    mrms = build_mrms_total(case, max_fhour, grid_lat, grid_lon)
+    print(f"  {case.model_label}: Stage IV total ...")
+    stage4, _ = stage4_on_fixed(case, max_fhour, grid_lat, grid_lon)
+    return {
+        "name": case.model_label,
+        "forecasts": {"parent": parent_total, "nest": nest_total},
+        "obs": {"MRMS": mrms, "Stage IV": stage4},
+    }
+
+
+def generate_comparison(cfg):
+    """Score both cases over one best-track swath and write figures + CSVs."""
+    cases = [from_yaml(p) for p in cfg["case_paths"]]
+    a, b = cases
+    if a.domain != b.domain or a.grid_res != b.grid_res:
+        raise ValueError(
+            f"cases must share domain/grid_res: {cfg['case_paths'][0]} has "
+            f"{a.domain}@{a.grid_res}, {cfg['case_paths'][1]} has {b.domain}@{b.grid_res}")
+    if a.mask_radius_km != b.mask_radius_km:
+        raise ValueError(
+            f"cases must share mask_radius_km ({a.mask_radius_km} vs {b.mask_radius_km})")
+    thresholds = cfg["thresholds_mm"] or a.thresholds_mm
+    grid_lat, grid_lon = a.fixed_grid()
+
+    print(f"Best track: {cfg['best_track']}")
+    track = parse_bdeck(cfg["best_track"])
+
+    fa = discover_files(a.run_dir, a.storm_glob(), a.fhours_filter)
+    fb = discover_files(b.run_dir, b.storm_glob(), b.fhours_filter)
+    if not fa or not fb:
+        print("No storm files found for one of the cases; aborting.")
+        return
+    max_fhour = min(fa[-1][0], fb[-1][0])
+    print(f"Shared swath: best track, 0-{max_fhour}h, "
+          f"<= {a.mask_radius_km:.0f} km")
+    swath = swath_from_track(track, grid_lat, grid_lon, a.mask_radius_km,
+                             a.init_dt, max_fhour)
+
+    models = [_build_model_fields(c, grid_lat, grid_lon, max_fhour) for c in cases]
+    cat_rows, fss_rows = score_matrix(models, swath, thresholds,
+                                      cfg["fss_scales_cells"], a.grid_res)
+
+    out_dir = cfg["out_dir"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    slug = _slug(cfg["label"])
+
+    cat_cols = ["model", "forecast", "observation", "threshold",
+                "a", "b", "c", "d", "ets", "csi", "bias", "pod", "far", "hss"]
+    cat_csv = out_dir / f"compare_categorical_{slug}.csv"
+    with open(cat_csv, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cat_cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(cat_rows)
+
+    fss_cols = ["model", "forecast", "observation", "threshold",
+                "scale_cells", "scale_km", "fss"]
+    fss_csv = out_dir / f"compare_fss_{slug}.csv"
+    with open(fss_csv, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fss_cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(fss_rows)
+
+    cat_png = out_dir / f"compare_categorical_{slug}.png"
+    fss_png = out_dir / f"compare_fss_{slug}.png"
+    plot_categorical_compare(cat_rows, cfg["label"], cat_png, observation="MRMS")
+    plot_fss_compare(fss_rows, cfg["label"], fss_png, observation="MRMS",
+                     forecast="parent",
+                     plot_thresholds=tuple(cfg["fss_plot_thresholds"]))
+
+    print(f"\nSaved: {cat_csv}")
+    print(f"Saved: {fss_csv}")
+    print(f"Saved: {cat_png}")
+    print(f"Saved: {fss_png}")
+    print("\nETS (parent vs MRMS) at 25 / 50 mm:")
+    for mdl in sorted({r["model"] for r in cat_rows}):
+        e25 = next((r["ets"] for r in cat_rows if r["model"] == mdl
+                    and r["forecast"] == "parent" and r["observation"] == "MRMS"
+                    and r["threshold"] == 25), float("nan"))
+        e50 = next((r["ets"] for r in cat_rows if r["model"] == mdl
+                    and r["forecast"] == "parent" and r["observation"] == "MRMS"
+                    and r["threshold"] == 50), float("nan"))
+        print(f"  {mdl}: ETS25={e25:.3f}  ETS50={e50:.3f}")
