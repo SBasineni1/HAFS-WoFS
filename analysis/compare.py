@@ -14,6 +14,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import yaml
+from ets_full import score_pair
+from ets_score import contingency_scores
+from skill_metrics import fractions_skill_score
 
 _DEFAULT_FSS_SCALES = [1, 3, 5, 11, 21, 41]
 _DEFAULT_FSS_PLOT_THR = [10, 25, 50]
@@ -40,3 +43,34 @@ def load_comparison(path):
         "fss_plot_thresholds": cfg.get("fss_plot_thresholds",
                                        list(_DEFAULT_FSS_PLOT_THR)),
     }
+
+
+def score_matrix(models, swath, thresholds, fss_scales, grid_res):
+    """Score every model x forecast x obs over the shared swath.
+
+    Returns (cat_rows, fss_rows). None observations are skipped.
+    """
+    cat_rows, fss_rows = [], []
+    for m in models:
+        for fname, fgrid in m["forecasts"].items():
+            for oname, ogrid in m["obs"].items():
+                if ogrid is None:
+                    continue
+                rows, _ = score_pair(fgrid, ogrid, swath, thresholds,
+                                     contingency_scores)
+                for r in rows:
+                    cat_rows.append({"model": m["name"], "forecast": fname,
+                                     "observation": oname, **r})
+                vmask = swath & np.isfinite(fgrid) & np.isfinite(ogrid)
+                ff = np.nan_to_num(fgrid, nan=0.0)
+                oo = np.nan_to_num(ogrid, nan=0.0)
+                for thr in thresholds:
+                    for sc in fss_scales:
+                        fss_rows.append({
+                            "model": m["name"], "forecast": fname,
+                            "observation": oname, "threshold": thr,
+                            "scale_cells": sc,
+                            "scale_km": round(sc * grid_res * 111.0, 1),
+                            "fss": fractions_skill_score(ff, oo, thr, sc, vmask),
+                        })
+    return cat_rows, fss_rows
