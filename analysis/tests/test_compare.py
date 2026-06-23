@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
-from compare import load_comparison, score_matrix
+from compare import load_comparison, score_matrix, plot_categorical_compare, plot_fss_compare
 
 
 def _write(cfg_text):
@@ -68,6 +68,30 @@ def test_score_matrix_shapes_and_perfect_fss():
     # Categorical rows carry the hss key and the model/forecast/observation tags.
     assert "hss" in cat[0] and cat[0]["model"] in ("HFSA", "HFSB")
     assert cat[0]["observation"] == "MRMS"
+
+
+def _toy_rows():
+    g = np.zeros((12, 12)); g[4:8, 4:8] = 20.0
+    swath = np.ones((12, 12), dtype=bool)
+    models = [
+        {"name": "HFSA", "forecasts": {"parent": g.copy(), "nest": g.copy()},
+         "obs": {"MRMS": g.copy()}},
+        {"name": "HFSB", "forecasts": {"parent": g.copy(), "nest": g.copy()},
+         "obs": {"MRMS": g.copy()}},
+    ]
+    return score_matrix(models, swath, [5.0, 25.0, 50.0], [1, 3], 0.05)
+
+
+def test_plots_write_png_files():
+    cat, fss = _toy_rows()
+    d = Path(tempfile.mkdtemp())
+    cat_png = d / "cat.png"
+    fss_png = d / "fss.png"
+    plot_categorical_compare(cat, "Test", cat_png, observation="MRMS")
+    plot_fss_compare(fss, "Test", fss_png, observation="MRMS",
+                     forecast="parent", plot_thresholds=(5.0, 25.0))
+    assert cat_png.exists() and cat_png.stat().st_size > 0
+    assert fss_png.exists() and fss_png.stat().st_size > 0
 
 
 def _run_all():
