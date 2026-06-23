@@ -269,7 +269,8 @@ def plot_compare(case, panels, end_fhour, out_path):
     valid_dt = case.init_dt + timedelta(hours=end_fhour)
     fig.suptitle(
         f"{case.storm_name} — {case.model_label} parent QPF vs MRMS vs Stage IV "
-        f"(0–{end_fhour}h, valid {valid_dt:%Y-%m-%d %HZ})",
+        f"(init {case.init_dt:%Y-%m-%d %HZ}, 0–{end_fhour}h, "
+        f"valid {valid_dt:%Y-%m-%d %HZ})",
         fontsize=13, y=1.01,
     )
     plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
@@ -363,7 +364,7 @@ def generate_parent_figure(case):
     # ------------------------------------------------------------------
     # Plot 3-panel.
     # ------------------------------------------------------------------
-    out_png = case.out_dir / f"parent_qpf_{case.case_slug}.png"
+    out_png = case.out_dir / f"parent_qpf_{case.output_slug}.png"
     panels = [
         (hafs_lons, hafs_lats, hafs_display,
          f"{case.model_label} Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),
