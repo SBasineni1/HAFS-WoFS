@@ -107,5 +107,7 @@ def contingency_scores(fcst, obs, threshold):
     pod = a / (a + c) if (a + c) > 0 else np.nan
     far = b / (a + b) if (a + b) > 0 else np.nan
     csi = a / (a + b + c) if (a + b + c) > 0 else np.nan
+    hss_denom = (a + c) * (c + d) + (a + b) * (b + d)
+    hss = (2 * (a * d - b * c) / hss_denom) if hss_denom != 0 else np.nan
     return dict(threshold=threshold, a=a, b=b, c=c, d=d,
-                ets=ets, bias=bias, pod=pod, far=far, csi=csi)
+                ets=ets, bias=bias, pod=pod, far=far, csi=csi, hss=hss)
