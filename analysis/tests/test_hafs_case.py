@@ -108,6 +108,18 @@ def test_globs_use_init_str():
     assert c.storm_glob() == "**/*2024092400*storm.atm.f*.grb2"
 
 
+def test_output_slug_appends_init():
+    c = _toy_case()
+    assert c.case_slug == "helene_hfsa"
+    assert c.output_slug == "helene_hfsa_2024092400"
+
+
+def test_output_slug_dedups_when_init_already_in_slug():
+    import dataclasses
+    c = dataclasses.replace(_toy_case(), case_slug="helene_hfsa_2024092400")
+    assert c.output_slug == "helene_hfsa_2024092400"
+
+
 def test_from_yaml_minimal_autoderives():
     tmpdir = Path(tempfile.mkdtemp())
     try:

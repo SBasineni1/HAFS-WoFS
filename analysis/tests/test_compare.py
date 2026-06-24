@@ -5,9 +5,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import csv
+import types
+from datetime import datetime
 import numpy as np
 from compare import (load_comparison, score_matrix, plot_categorical_compare,
-                     plot_fss_compare, _model_colors, replot_from_csv)
+                     plot_fss_compare, _model_colors, replot_from_csv,
+                     _check_same_init, _init_tag, _plot_comparison)
 
 
 def _write(cfg_text):
@@ -93,23 +96,28 @@ def test_model_colors_distinct_and_not_gray():
     assert "gray" not in (colors["HAFS-A"], colors["HAFS-B"])
 
 
-def test_replot_from_csv_regenerates_pngs():
+def test_plot_comparison_writes_init_tagged_pngs():
     cat, fss = _toy_rows()
     d = Path(tempfile.mkdtemp())
-    cat_cols = ["model", "forecast", "observation", "threshold",
+    slug = "hurricane_helene_2024092400"
+    cat_cols = ["init", "model", "forecast", "observation", "threshold",
                 "a", "b", "c", "d", "ets", "csi", "bias", "pod", "far", "hss"]
-    fss_cols = ["model", "forecast", "observation", "threshold",
+    fss_cols = ["init", "model", "forecast", "observation", "threshold",
                 "scale_cells", "scale_km", "fss"]
-    with open(d / "compare_categorical_test.csv", "w", newline="") as fh:
+    for r in cat:
+        r["init"] = "2024092400"
+    for r in fss:
+        r["init"] = "2024092400"
+    with open(d / f"compare_categorical_{slug}.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cat_cols, extrasaction="ignore")
         w.writeheader(); w.writerows(cat)
-    with open(d / "compare_fss_test.csv", "w", newline="") as fh:
+    with open(d / f"compare_fss_{slug}.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fss_cols, extrasaction="ignore")
         w.writeheader(); w.writerows(fss)
-    cfg = {"out_dir": d, "label": "Test", "fss_plot_thresholds": [25, 50]}
-    replot_from_csv(cfg)
-    assert (d / "compare_categorical_test.png").stat().st_size > 0
-    assert (d / "compare_fss_test.png").stat().st_size > 0
+    from compare import _plot_comparison
+    _plot_comparison(d, slug, "Hurricane Helene (init 2024-09-24 00Z)", [25, 50])
+    assert (d / f"compare_categorical_{slug}.png").stat().st_size > 0
+    assert (d / f"compare_fss_{slug}.png").stat().st_size > 0
 
 
 def test_score_matrix_common_n_across_models_when_footprints_differ():
@@ -138,6 +146,35 @@ def test_plots_write_png_files():
                      forecast="parent", plot_thresholds=(5.0, 25.0))
     assert cat_png.exists() and cat_png.stat().st_size > 0
     assert fss_png.exists() and fss_png.stat().st_size > 0
+
+
+def test_init_tag_appends_and_formats():
+    slug, title = _init_tag("Hurricane Helene", datetime(2024, 9, 24, 0))
+    assert slug == "hurricane_helene_2024092400"
+    assert title == "Hurricane Helene (init 2024-09-24 00Z)"
+
+
+def test_init_tag_dedups_when_label_has_init():
+    slug, _ = _init_tag("helene 2024092400", datetime(2024, 9, 24, 0))
+    assert slug == "helene_2024092400"   # not ..._2024092400_2024092400
+
+
+def test_check_same_init_passes_when_equal():
+    c = types.SimpleNamespace(init_dt=datetime(2024, 9, 24, 0),
+                              init_str="2024092400")
+    _check_same_init([c, c], ["a.yaml", "b.yaml"])   # no raise
+
+
+def test_check_same_init_raises_when_differ():
+    a = types.SimpleNamespace(init_dt=datetime(2024, 9, 24, 0),
+                              init_str="2024092400")
+    b = types.SimpleNamespace(init_dt=datetime(2024, 9, 24, 12),
+                              init_str="2024092412")
+    try:
+        _check_same_init([a, b], ["a.yaml", "b.yaml"])
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "2024092400" in str(e) and "2024092412" in str(e)
 
 
 def _run_all():

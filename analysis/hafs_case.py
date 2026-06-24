@@ -152,6 +152,17 @@ class StormCase:
     def storm_glob(self):
         return f"**/*{self.init_str}*storm.atm.f*.grb2"
 
+    @property
+    def output_slug(self):
+        """case_slug with the init appended for output filenames, de-duplicated.
+
+        'helene_hfsa' -> 'helene_hfsa_2024092400'; returned unchanged if the
+        slug already contains the init string (YAML was named with it).
+        """
+        if self.init_str in self.case_slug:
+            return self.case_slug
+        return f"{self.case_slug}_{self.init_str}"
+
 
 _DEFAULT_THRESHOLDS = [1, 5, 10, 25, 50, 75, 100, 150, 200, 250]
 

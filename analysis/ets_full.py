@@ -208,8 +208,8 @@ def compute_ets(case):
     print("=" * 84)
 
     case.out_dir.mkdir(parents=True, exist_ok=True)
-    out_csv = case.out_dir / f"ets_full_{case.case_slug}.csv"
-    out_png = case.out_dir / f"ets_full_{case.case_slug}.png"
+    out_csv = case.out_dir / f"ets_full_{case.output_slug}.csv"
+    out_png = case.out_dir / f"ets_full_{case.output_slug}.png"
 
     fieldnames = ["forecast", "observation", "threshold", "a", "b", "c", "d",
                   "ets", "bias", "pod", "far", "csi"]

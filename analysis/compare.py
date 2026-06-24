@@ -184,6 +184,25 @@ def _slug(label):
     return label.lower().replace(" ", "_")
 
 
+def _check_same_init(cases, case_paths):
+    """Raise ValueError naming both if the two comparison cases' inits differ."""
+    a, b = cases
+    if a.init_dt != b.init_dt:
+        raise ValueError(
+            f"comparison cases must share an init: {case_paths[0]} is "
+            f"{a.init_str}, {case_paths[1]} is {b.init_str}")
+
+
+def _init_tag(label, init_dt):
+    """(slug, title) tagged by init. slug = '<label-slug>_<YYYYMMDDHH>'
+    (de-duplicated); title = '<label> (init YYYY-MM-DD HHZ)'."""
+    init_str = init_dt.strftime("%Y%m%d%H")
+    base = _slug(label)
+    slug = base if init_str in base else f"{base}_{init_str}"
+    title = f"{label} (init {init_dt:%Y-%m-%d %HZ})"
+    return slug, title
+
+
 _CAT_NUM = ("threshold", "a", "b", "c", "d", "ets", "csi", "bias",
             "pod", "far", "hss")
 _FSS_NUM = ("threshold", "scale_cells", "scale_km", "fss")
@@ -204,25 +223,31 @@ def _read_rows(path, numeric):
     return rows
 
 
+def _plot_comparison(out_dir, slug, title, fss_plot_thresholds):
+    """Read the init-tagged CSVs and (re)draw the two PNGs. No case loading."""
+    cat_rows = _read_rows(out_dir / f"compare_categorical_{slug}.csv", _CAT_NUM)
+    fss_rows = _read_rows(out_dir / f"compare_fss_{slug}.csv", _FSS_NUM)
+    plot_categorical_compare(cat_rows, title,
+                             out_dir / f"compare_categorical_{slug}.png",
+                             observation="MRMS")
+    plot_fss_compare(fss_rows, title,
+                     out_dir / f"compare_fss_{slug}.png",
+                     observation="MRMS", forecast="parent",
+                     plot_thresholds=tuple(float(t) for t in fss_plot_thresholds))
+
+
 def replot_from_csv(cfg):
     """Regenerate the comparison figures from the existing CSVs — no GRIB work.
 
-    Use after tweaking the plot styling, so you don't re-run the slow
-    accumulation: python analysis/run.py storms/<name>_compare.yaml replot
+    Loads the two case YAMLs (cheap; only parses the .atcfunix) to learn the
+    shared init, then redraws the init-tagged figures.
     """
-    out_dir = cfg["out_dir"]
-    slug = _slug(cfg["label"])
-    cat_rows = _read_rows(out_dir / f"compare_categorical_{slug}.csv", _CAT_NUM)
-    fss_rows = _read_rows(out_dir / f"compare_fss_{slug}.csv", _FSS_NUM)
-    cat_png = out_dir / f"compare_categorical_{slug}.png"
-    fss_png = out_dir / f"compare_fss_{slug}.png"
-    plot_categorical_compare(cat_rows, cfg["label"], cat_png, observation="MRMS")
-    plot_fss_compare(fss_rows, cfg["label"], fss_png, observation="MRMS",
-                     forecast="parent",
-                     plot_thresholds=tuple(float(t)
-                                           for t in cfg["fss_plot_thresholds"]))
-    print(f"Replotted: {cat_png}")
-    print(f"Replotted: {fss_png}")
+    cases = [from_yaml(p) for p in cfg["case_paths"]]
+    _check_same_init(cases, cfg["case_paths"])
+    slug, title = _init_tag(cfg["label"], cases[0].init_dt)
+    _plot_comparison(cfg["out_dir"], slug, title, cfg["fss_plot_thresholds"])
+    print(f"Replotted: {cfg['out_dir']}/compare_categorical_{slug}.png")
+    print(f"Replotted: {cfg['out_dir']}/compare_fss_{slug}.png")
 
 
 def _build_model_fields(case, grid_lat, grid_lon, max_fhour):
@@ -247,6 +272,9 @@ def _build_model_fields(case, grid_lat, grid_lon, max_fhour):
 def generate_comparison(cfg):
     """Score both cases over one best-track swath and write figures + CSVs."""
     cases = [from_yaml(p) for p in cfg["case_paths"]]
+    _check_same_init(cases, cfg["case_paths"])
+    slug, title = _init_tag(cfg["label"], cases[0].init_dt)
+    init_str = cases[0].init_str
     a, b = cases
     if a.domain != b.domain or a.grid_res != b.grid_res:
         raise ValueError(
@@ -277,11 +305,15 @@ def generate_comparison(cfg):
     cat_rows, fss_rows = score_matrix(models, swath, thresholds,
                                       cfg["fss_scales_cells"], a.grid_res)
 
+    for r in cat_rows:
+        r["init"] = init_str
+    for r in fss_rows:
+        r["init"] = init_str
+
     out_dir = cfg["out_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
-    slug = _slug(cfg["label"])
 
-    cat_cols = ["model", "forecast", "observation", "threshold",
+    cat_cols = ["init", "model", "forecast", "observation", "threshold",
                 "a", "b", "c", "d", "ets", "csi", "bias", "pod", "far", "hss"]
     cat_csv = out_dir / f"compare_categorical_{slug}.csv"
     with open(cat_csv, "w", newline="") as fh:
@@ -289,7 +321,7 @@ def generate_comparison(cfg):
         w.writeheader()
         w.writerows(cat_rows)
 
-    fss_cols = ["model", "forecast", "observation", "threshold",
+    fss_cols = ["init", "model", "forecast", "observation", "threshold",
                 "scale_cells", "scale_km", "fss"]
     fss_csv = out_dir / f"compare_fss_{slug}.csv"
     with open(fss_csv, "w", newline="") as fh:
@@ -299,8 +331,8 @@ def generate_comparison(cfg):
 
     cat_png = out_dir / f"compare_categorical_{slug}.png"
     fss_png = out_dir / f"compare_fss_{slug}.png"
-    plot_categorical_compare(cat_rows, cfg["label"], cat_png, observation="MRMS")
-    plot_fss_compare(fss_rows, cfg["label"], fss_png, observation="MRMS",
+    plot_categorical_compare(cat_rows, title, cat_png, observation="MRMS")
+    plot_fss_compare(fss_rows, title, fss_png, observation="MRMS",
                      forecast="parent",
                      plot_thresholds=tuple(cfg["fss_plot_thresholds"]))
 
