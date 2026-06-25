@@ -231,6 +231,20 @@ def qpf_cmap():
     return cmap, norm
 
 
+def swath_masked(field, lats, lons, case, end_fhour):
+    """Zero `field` outside the TC display swath; NaN->0 inside it.
+
+    The swath is the union of circles of `case.display_radius_km` around the
+    best-track position at each hour 0..end_fhour.  `lats`/`lons` are 2-D
+    arrays of the same shape as `field` (any grid: HAFS-native or fixed mesh).
+    """
+    mask = np.zeros(np.shape(lats), dtype=bool)
+    for h in range(0, end_fhour + 1):
+        tlat, tlon = case.position_at(case.init_dt + timedelta(hours=h))
+        mask |= haversine_km(tlat, tlon, lats, lons) <= case.display_radius_km
+    return np.where(mask, np.nan_to_num(field, nan=0.0), 0.0)
+
+
 def plot_compare(case, panels, end_fhour, out_path):
     """panels: list of (lons, lats, data_mm, title); data may be None."""
     lat_min, lat_max, lon_min, lon_max = case.domain
@@ -316,11 +330,7 @@ def generate_parent_figure(case):
 
     # TC rainfall swath mask on the parent grid (union of circles along
     # the best track for hours 0..end_fhour) — same footprint as the QPE below.
-    hafs_swath = np.zeros(hafs_lats.shape, dtype=bool)
-    for h in range(0, end_fhour + 1):
-        tlat, tlon = case.position_at(case.init_dt + timedelta(hours=h))
-        hafs_swath |= haversine_km(tlat, tlon, hafs_lats, hafs_lons) <= case.display_radius_km
-    hafs_display = np.where(hafs_swath, np.nan_to_num(hafs_mm, nan=0.0), 0.0)
+    hafs_display = swath_masked(hafs_mm, hafs_lats, hafs_lons, case, end_fhour)
 
     # ------------------------------------------------------------------
     # MRMS total over the same 0->end_fhour window, masked to the swath.
