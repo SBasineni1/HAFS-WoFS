@@ -1,5 +1,5 @@
 """
-HAFS PARENT-domain QPF vs MRMS QPE vs Stage IV QPE — static 3-panel.
+HAFS QPF (nest + parent) vs MRMS QPE vs Stage IV QPE — static 4-panel.
 
 The parent panel is the field operational viewers (e.g. Tropical Tidbits'
 "HAFS-A Parent Model — Total Accumulated Precip") draw.  The 6-km parent domain
@@ -17,8 +17,9 @@ Two observed-QPE references are shown for comparison of rainfall amounts:
 The 2-km moving NEST is higher-res but its cumulative tp is storm-relative
 (needs per-interval bucket summing and still scallops with storm speed); the
 parent domain is coarser (lower peaks) but geographically honest and viewer-
-consistent.  The nest total is still computed for the ETS comparison (see
-ets_full.py via hafs_common.hafs_event_total).
+consistent.  The nest running-max total (same field ets_full.py scores, via
+hafs_common.hafs_event_total) is shown as the first panel for comparison; its
+title carries the inflation caveat.
 
 Usage (on Hercules):
     module load miniconda3
