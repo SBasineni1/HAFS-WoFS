@@ -212,7 +212,7 @@ def compute_ets(case):
     out_png = case.out_dir / f"ets_full_{case.output_slug}.png"
 
     fieldnames = ["forecast", "observation", "threshold", "a", "b", "c", "d",
-                  "ets", "bias", "pod", "far", "csi"]
+                  "ets", "bias", "pod", "far", "csi", "hss"]
     with open(out_csv, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fieldnames)
         w.writeheader()
