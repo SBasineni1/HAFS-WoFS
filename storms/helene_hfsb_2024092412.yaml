@@ -1,0 +1,8 @@
+# HAFS-B — Hurricane Helene (2024-09-24 12Z init). Model label auto-detected
+# as HAFS-B from the HFSB path.
+run_dir: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSB/2024092412
+storm_name: Hurricane Helene
+init: 2024092412
+domain: [15.0, 42.0, -100.0, -60.0]
+mask_radius_km: 500
+out_dir: analysis/output/helene_hfsb_2024092412

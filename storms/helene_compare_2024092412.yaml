@@ -1,0 +1,13 @@
+# HFSA vs HFSB head-to-head for Hurricane Helene, 2024-09-24 12Z init, scored
+# over the NHC best-track swath. Same best track file as the 00Z comparison
+# (per-storm, init-independent).
+label: Hurricane Helene
+cases:
+  - storms/helene_hfsa_2024092412.yaml
+  - storms/helene_hfsb_2024092412.yaml
+best_track: /work2/noaa/aoml-hafs1/suchit/bal092024.dat
+out_dir: analysis/output/helene_compare_2024092412
+# optional overrides:
+# thresholds_mm: [1, 5, 10, 25, 50, 75, 100, 150, 200, 250]
+# fss_scales_cells: [1, 3, 5, 11, 21, 41]
+# fss_plot_thresholds: [10, 25, 50]
