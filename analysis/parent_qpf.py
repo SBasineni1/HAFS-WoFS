@@ -53,6 +53,7 @@ import cartopy.feature as cfeature
 from hafs_common import (
     QPF_LEVELS, QPF_COLORS,
     read_hafs_tp_records, haversine_km, load_mrms_hour, crop_to_domain,
+    discover_files, hafs_event_total,
 )
 from hafs_case import from_yaml
 
@@ -282,13 +283,34 @@ def plot_compare(case, panels, end_fhour, out_path):
                      ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
     valid_dt = case.init_dt + timedelta(hours=end_fhour)
     fig.suptitle(
-        f"{case.storm_name} — {case.model_label} parent QPF vs MRMS vs Stage IV "
+        f"{case.storm_name} — {case.model_label} QPF: nest vs parent vs MRMS vs Stage IV "
         f"(init {case.init_dt:%Y-%m-%d %HZ}, 0–{end_fhour}h, "
         f"valid {valid_dt:%Y-%m-%d %HZ})",
         fontsize=13, y=1.01,
     )
     plt.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+
+
+# =============================================================================
+# Nest field
+# =============================================================================
+
+def compute_nest_field(case, grid_lat, grid_lon, end_fhour):
+    """Moving-nest running-max APCP on the fixed grid, masked to the swath.
+
+    Same field ets_full.py scores (hafs_event_total over the storm.atm files).
+    Returns None when no nest files are found so the figure can still render
+    its other panels.
+    """
+    file_pairs = discover_files(case.run_dir, case.storm_glob(),
+                                case.fhours_filter)
+    if not file_pairs:
+        print("  No storm.atm (nest) files found — nest panel unavailable.")
+        return None
+    nest_total, mode = hafs_event_total(file_pairs, grid_lat, grid_lon)
+    print(f"  nest APCP mode: {mode}, max {np.nanmax(nest_total):.0f} mm")
+    return swath_masked(nest_total, grid_lat, grid_lon, case, end_fhour)
 
 
 # =============================================================================
@@ -372,10 +394,21 @@ def generate_parent_figure(case):
         print(f"  Stage IV window: {s4_label}")
 
     # ------------------------------------------------------------------
-    # Plot 3-panel.
+    # Moving-nest total on the fixed verification grid (same field ETS
+    # scores), masked to the display swath.
+    # ------------------------------------------------------------------
+    print("\nAccumulating HAFS nest (storm.atm) running-max APCP ...")
+    grid_lat, grid_lon = case.fixed_grid()
+    nest_display = compute_nest_field(case, grid_lat, grid_lon, end_fhour)
+
+    # ------------------------------------------------------------------
+    # Plot 4-panel.
     # ------------------------------------------------------------------
     out_png = case.out_dir / f"parent_qpf_{case.output_slug}.png"
     panels = [
+        (grid_lon, grid_lat, nest_display,
+         f"{case.model_label} Nest APCP (moving 2-km, running-max)\n"
+         f"0–{end_fhour}h — can inflate vs swept frontal rain"),
         (hafs_lons, hafs_lats, hafs_display,
          f"{case.model_label} Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),
         (mrms_lons, mrms_lats, mrms_total,
@@ -388,7 +421,8 @@ def generate_parent_figure(case):
     def _mx(a):
         return float(np.nanmax(a)) if a is not None else float("nan")
     print(f"\nSaved {out_png}")
-    print(f"  HAFS parent max {_mx(hafs_display):.0f} mm | "
+    print(f"  HAFS nest max {_mx(nest_display):.0f} mm | "
+          f"HAFS parent max {_mx(hafs_display):.0f} mm | "
           f"MRMS max {_mx(mrms_total):.0f} mm | "
           f"Stage IV max {_mx(s4_total):.0f} mm")
 

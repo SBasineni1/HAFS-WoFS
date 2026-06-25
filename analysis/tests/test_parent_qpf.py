@@ -57,7 +57,45 @@ def test_swath_masked_replaces_nan_with_zero_inside_swath():
     assert not np.any(np.isnan(out))
 
 
+def test_compute_nest_field_returns_none_when_no_files(monkeypatch):
+    lat2d, lon2d = _grid()
+
+    class C(FakeCase):
+        run_dir = Path("/nowhere")
+        fhours_filter = None
+        def storm_glob(self):
+            return "*storm.atm.f*.grb2"
+
+    monkeypatch.setattr(parent_qpf, "discover_files", lambda *a, **k: [])
+    out = parent_qpf.compute_nest_field(C(), lat2d, lon2d, end_fhour=0)
+    assert out is None
+
+
+def test_compute_nest_field_masks_total_to_swath(monkeypatch):
+    lat2d, lon2d = _grid()
+
+    class C(FakeCase):
+        run_dir = Path("/nowhere")
+        fhours_filter = None
+        def storm_glob(self):
+            return "*storm.atm.f*.grb2"
+
+    # Pretend discovery found one file-pair; stub the heavy accumulation.
+    monkeypatch.setattr(parent_qpf, "discover_files",
+                        lambda *a, **k: [(0, Path("f000"))])
+    monkeypatch.setattr(parent_qpf, "hafs_event_total",
+                        lambda *a, **k: (np.full(lat2d.shape, 40.0), "amount"))
+
+    case = C(lat=30.0, lon=-85.0, radius_km=200.0)
+    out = parent_qpf.compute_nest_field(case, lat2d, lon2d, end_fhour=0)
+    assert out is not None
+    ci = np.argmin(np.abs(lat2d[:, 0] - 30.0))
+    cj = np.argmin(np.abs(lon2d[0, :] - (-85.0)))
+    assert out[ci, cj] == 40.0        # kept at center
+    assert out[0, 0] == 0.0           # zeroed in far corner
+
+
 if __name__ == "__main__":
     test_swath_masked_zeros_outside_radius()
     test_swath_masked_replaces_nan_with_zero_inside_swath()
-    print("ok")
+    print("ok (run `pytest` for the monkeypatched nest tests)")
