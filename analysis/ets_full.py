@@ -153,12 +153,19 @@ def plot_curves(case, results, max_fhour, out_path, caveat=""):
     plt.close(fig)
 
 
-def compute_ets(case):
+def build_verification_fields(case):
+    """Build every field the verification products need, once per case.
+
+    Returns a dict: max_fhour, grid_lat, grid_lon, nest_total, apcp_mode,
+    parent_total, mrms_total, stage4_grid, s4_label, swath. stage4_grid is
+    None when Stage IV is unavailable. Raises RuntimeError when no nest
+    files match the case glob or no MRMS hour can be loaded.
+    """
     file_pairs = discover_files(case.run_dir, case.storm_glob(),
                                 case.fhours_filter)
     if not file_pairs:
-        print(f"No files matching {case.storm_glob()} in {case.run_dir}")
-        return
+        raise RuntimeError(
+            f"No files matching {case.storm_glob()} in {case.run_dir}")
     max_fhour = file_pairs[-1][0]
     print(f"Init {case.init_dt:%Y-%m-%d %HZ} | accumulation 0–{max_fhour}h")
 
@@ -183,12 +190,42 @@ def compute_ets(case):
     print("TC verification swath ...")
     swath = tc_swath_mask(case, max_fhour, grid_lat, grid_lon)
 
-    forecasts = [("parent", parent_total), ("nest", nest_total)]
-    observations = [("MRMS", mrms_total)]
-    if stage4_grid is not None:
-        observations.append(("Stage IV", stage4_grid))
+    return dict(max_fhour=max_fhour, grid_lat=grid_lat, grid_lon=grid_lon,
+                nest_total=nest_total, apcp_mode=apcp_mode,
+                parent_total=parent_total, mrms_total=mrms_total,
+                stage4_grid=stage4_grid, s4_label=s4_label, swath=swath)
+
+
+def field_pairs(fields):
+    """(forecasts, observations) as (name, grid) lists from a fields dict.
+
+    Stage IV joins the observations only when it was available.
+    """
+    forecasts = [("parent", fields["parent_total"]),
+                 ("nest", fields["nest_total"])]
+    observations = [("MRMS", fields["mrms_total"])]
+    if fields["stage4_grid"] is not None:
+        observations.append(("Stage IV", fields["stage4_grid"]))
     else:
         print("  Stage IV unavailable — scoring MRMS only.")
+    return forecasts, observations
+
+
+def stage4_caveat(fields):
+    """Figure-footer caveat describing the Stage IV accumulation window."""
+    if fields["stage4_grid"] is None:
+        return "Stage IV unavailable — not scored."
+    return (f"Stage IV: CONUS-only, 24h 12Z–12Z files summed over touched "
+            f"days ({fields['s4_label']}) — window approximates the "
+            f"0–{fields['max_fhour']}h forecast accumulation.")
+
+
+def compute_ets(case, fields=None):
+    if fields is None:
+        fields = build_verification_fields(case)
+    max_fhour = fields["max_fhour"]
+    swath = fields["swath"]
+    forecasts, observations = field_pairs(fields)
 
     results = []
     print("\n" + "=" * 84)
@@ -222,12 +259,7 @@ def compute_ets(case):
                             "observation": res["observation"], **r})
     print(f"\nSaved table: {out_csv}")
 
-    if stage4_grid is None:
-        caveat = "Stage IV unavailable — not scored."
-    else:
-        caveat = (f"Stage IV: CONUS-only, 24h 12Z–12Z files summed over touched "
-                  f"days ({s4_label}) — window approximates the 0–{max_fhour}h "
-                  f"forecast accumulation.")
+    caveat = stage4_caveat(fields)
     print(caveat)
     plot_curves(case, results, max_fhour, out_png, caveat=caveat)
     print(f"Saved plot : {out_png}")

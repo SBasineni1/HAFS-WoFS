@@ -82,9 +82,10 @@ HAFS-A vs HAFS-B is auto-detected from `HFSA` / `HFSB` in the path.
 From the repo root, with the env activated:
 
 ```bash
-python analysis/run.py storms/<case>.yaml all      # parent figure + ETS  (default)
+python analysis/run.py storms/<case>.yaml all      # parent figure + ETS + RMSE (default)
 python analysis/run.py storms/<case>.yaml parent   # 3-panel QPF figure only
 python analysis/run.py storms/<case>.yaml ets      # ETS plot + CSV only
+python analysis/run.py storms/<case>.yaml rmse     # RMSE scatter + CSV only
 ```
 
 The two shipped examples:
@@ -106,6 +107,8 @@ Land in `analysis/output/<case>/` (or wherever `out_dir` points):
 parent_qpf_<case>.png     # HAFS parent vs MRMS vs Stage IV, 3-panel
 ets_full_<case>.png       # ETS vs threshold: parent/nest × MRMS/Stage IV
 ets_full_<case>.csv       # the same scores as a table (a/b/c/d, ETS, bias, POD, FAR, CSI)
+rmse_scatter_<case>.png   # forecast-vs-observed hexbin panels: parent/nest × MRMS/Stage IV
+rmse_<case>.csv           # storm-total continuous scores (n, RMSE, MAE, bias, r)
 ```
 
 > **Init tagging:** every output filename is automatically stamped with the run's
@@ -203,6 +206,24 @@ fair, apples-to-apples read.
 > makes a direct A-vs-B ETS comparison a confound. If you need a clean
 > head-to-head, both should be verified over a common swath (e.g. the NHC best
 > track) — not yet implemented; ask if you want it.
+
+---
+
+## 7. How to read the RMSE scatter
+
+Each `rmse_scatter_<case>.png` panel plots every swath grid point's
+storm-total rainfall: observed (x) vs forecast (y), with a dotted 1:1
+line. Points above the line are over-forecasts. The annotation box gives:
+
+- **RMSE** — root-mean-square error of the totals (mm); penalizes big misses.
+- **MAE** — mean absolute error (mm).
+- **bias** — mean(forecast − observed): **positive = over-forecast**.
+- **r** — Pearson correlation of the point totals.
+- **n** — valid swath points scored (same footprint as the ETS).
+
+RMSE/MAE/bias are continuous companions to the categorical ETS curves:
+ETS asks "did we put rain ≥ X in the right places", the scatter asks
+"how far off were the amounts".
 
 ---
 

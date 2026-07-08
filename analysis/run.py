@@ -1,11 +1,12 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|ets|all|compare|replot]
+    python analysis/run.py <case.yaml> [parent|ets|rmse|all|compare|replot]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
   parent  the parent-domain QPF vs MRMS vs Stage IV 3-panel figure
   ets     the combined parent+nest ETS-vs-threshold figure + CSV
-  all     both (default)
+  rmse    storm-total RMSE/MAE/bias/r scatter panels + CSV
+  all     parent + ets + rmse (fields built once; default)
   compare HFSA-vs-HFSB rainfall comparison (takes a comparison YAML)
   replot  redraw the comparison figures from existing CSVs (no recompute)
 """
@@ -15,13 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-COMMANDS = ("parent", "ets", "all", "compare", "replot")
+COMMANDS = ("parent", "ets", "rmse", "all", "compare", "replot")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
-        print("usage: run.py <case.yaml> [parent|ets|all|compare|replot]")
+        print("usage: run.py <case.yaml> [parent|ets|rmse|all|compare|replot]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -34,11 +35,19 @@ def parse_args(argv):
 def dispatch(case, command):
     """Run the requested product(s) for a loaded StormCase."""
     from parent_qpf import generate_parent_figure
-    from ets_full import compute_ets
+    from ets_full import compute_ets, build_verification_fields
+    from rmse_scatter import compute_rmse
     if command in ("parent", "all"):
         generate_parent_figure(case)
-    if command in ("ets", "all"):
+    if command == "ets":
         compute_ets(case)
+    if command == "rmse":
+        compute_rmse(case)
+    if command == "all":
+        # Build the expensive verification fields once, share across products.
+        fields = build_verification_fields(case)
+        compute_ets(case, fields=fields)
+        compute_rmse(case, fields=fields)
 
 
 def main(argv):

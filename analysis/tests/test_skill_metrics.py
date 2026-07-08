@@ -45,6 +45,49 @@ def test_fss_no_events_is_nan():
     assert np.isnan(fractions_skill_score(f, o, 5.0, 1, mask))
 
 
+from skill_metrics import continuous_scores
+
+
+def test_continuous_scores_hand_computed():
+    # fcst=[1,2,3], obs=[0,2,5] -> err=[1,0,-2]
+    # rmse=sqrt(5/3), mae=1, bias=-1/3, r=15/sqrt(228)
+    s = continuous_scores(np.array([1.0, 2.0, 3.0]),
+                          np.array([0.0, 2.0, 5.0]))
+    assert s["n"] == 3
+    assert abs(s["rmse"] - np.sqrt(5.0 / 3.0)) < 1e-12
+    assert abs(s["mae"] - 1.0) < 1e-12
+    assert abs(s["bias"] - (-1.0 / 3.0)) < 1e-12
+    assert abs(s["r"] - 15.0 / np.sqrt(228.0)) < 1e-12
+
+
+def test_continuous_scores_perfect_forecast():
+    f = np.array([0.0, 5.0, 20.0, 100.0])
+    s = continuous_scores(f, f.copy())
+    assert s["rmse"] == 0.0 and s["mae"] == 0.0 and s["bias"] == 0.0
+    assert abs(s["r"] - 1.0) < 1e-12
+
+
+def test_continuous_scores_empty_is_nan():
+    s = continuous_scores(np.array([]), np.array([]))
+    assert s["n"] == 0
+    assert all(np.isnan(s[k]) for k in ("rmse", "mae", "bias", "r"))
+
+
+def test_continuous_scores_constant_field_r_is_nan():
+    # Zero variance in obs -> correlation undefined -> NaN (not a warning/crash).
+    s = continuous_scores(np.array([1.0, 2.0, 3.0]),
+                          np.array([4.0, 4.0, 4.0]))
+    assert np.isnan(s["r"])
+    assert abs(s["bias"] - (-2.0)) < 1e-12
+
+
+def test_continuous_scores_single_point_r_is_nan():
+    s = continuous_scores(np.array([3.0]), np.array([1.0]))
+    assert s["n"] == 1
+    assert abs(s["rmse"] - 2.0) < 1e-12
+    assert np.isnan(s["r"])
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -29,6 +29,11 @@ def test_parse_args_accepts_compare():
     assert command == "compare"
 
 
+def test_parse_args_accepts_rmse():
+    yaml_path, command = run.parse_args(["case.yaml", "rmse"])
+    assert command == "rmse"
+
+
 def _run_all():
     """Discover and run all test_* functions."""
     import inspect
