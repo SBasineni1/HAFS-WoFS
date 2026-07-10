@@ -1,11 +1,12 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|ets|rmse|all|compare|replot]
+    python analysis/run.py <case.yaml> [parent|ets|rmse|cycles|all|compare|replot]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
   parent  the parent-domain QPF vs MRMS vs Stage IV 3-panel figure
   ets     the combined parent+nest ETS-vs-threshold figure + CSV
   rmse    storm-total RMSE/MAE/bias/r scatter panels + CSV
+  cycles  per-initialization comparison on a common valid window (takes a cycles YAML)
   all     parent + ets + rmse (fields built once; default)
   compare HFSA-vs-HFSB rainfall comparison (takes a comparison YAML)
   replot  redraw the comparison figures from existing CSVs (no recompute)
@@ -16,13 +17,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-COMMANDS = ("parent", "ets", "rmse", "all", "compare", "replot")
+COMMANDS = ("parent", "ets", "rmse", "cycles", "all", "compare", "replot")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
-        print("usage: run.py <case.yaml> [parent|ets|rmse|all|compare|replot]")
+        print("usage: run.py <case.yaml> [parent|ets|rmse|cycles|all|compare|replot]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -57,6 +58,16 @@ def main(argv):
                              replot_from_csv)
         cfg = load_comparison(yaml_path)
         (generate_comparison if command == "compare" else replot_from_csv)(cfg)
+        return
+    if command == "cycles":
+        from hafs_case import cycles_from_yaml
+        from cycles import compute_cycles
+        ccase = cycles_from_yaml(yaml_path)
+        print(f"Case   : {ccase.storm_name} ({ccase.model_label})")
+        print(f"Window : {ccase.valid_start:%Y-%m-%d %HZ} -> "
+              f"{ccase.valid_end:%Y-%m-%d %HZ}  | run_root: {ccase.run_root}")
+        print(f"Output : {ccase.out_dir}  | command: {command}")
+        compute_cycles(ccase)
         return
     from hafs_case import from_yaml
     case = from_yaml(yaml_path)

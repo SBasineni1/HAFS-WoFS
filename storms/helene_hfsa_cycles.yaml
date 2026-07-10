@@ -1,0 +1,13 @@
+# HAFS-A — Hurricane Helene, all initializations vs the landfall rainfall.
+# run_root holds one YYYYMMDDHH subdirectory per cycle (auto-discovered);
+# every eligible cycle is scored on the same valid window over a shared
+# union-of-tracks footprint, so only lead time changes between cycles.
+run_root: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSA
+valid_start: 2024092600        # common window (UTC, YYYYMMDDHH)
+valid_end:   2024092800
+storm_name: Hurricane Helene
+domain: [15.0, 42.0, -100.0, -60.0]   # lat_min, lat_max, lon_min, lon_max
+mask_radius_km: 500
+out_dir: analysis/output/helene_hfsa_cycles
+# inits: [2024092400, 2024092412]    # optional; overrides auto-discovery
+# ets_threshold_mm: 25               # headline threshold for the ETS panel

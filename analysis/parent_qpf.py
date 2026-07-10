@@ -80,6 +80,14 @@ def default_parent_path(case):
     return max(hits, key=fhour)
 
 
+def parent_path_at_fhour(case, fhour):
+    """The parent.atm file for one exact forecast hour, or None if absent."""
+    suffix = f".f{fhour:03d}.grb2"
+    hits = [p for p in sorted(case.run_dir.glob(case.parent_glob()))
+            if p.name.endswith(suffix)]
+    return hits[0] if hits else None
+
+
 def pick_cumulative_record(records):
     """Pick the 0->fhour cumulative APCP record on the (fixed) parent grid.
 
@@ -160,24 +168,20 @@ def read_stage4(path):
     raise RuntimeError(f"no variable in {path}")
 
 
-def stage4_total(case, end_fhour):
-    """Sum the daily CONUS 24h Stage IV files spanning the forecast window,
-    then mask the total to the full-track TC swath (same footprint as HAFS).
+def stage4_sum_days(cache_dir, start_dt, end_dt):
+    """Sum the daily CONUS 24h Stage IV files whose date the window touches.
 
-    24h files are valid 12Z->12Z so they don't align exactly with the 00Z-init
-    0->end_fhour window; we sum every day the event touches.  Returns
-    (lat2d, lon2d, total_mm, label) or (None, None, None, None) if unavailable.
+    Returns (lat2d, lon2d, total_mm, used_keys) with the total UNMASKED;
+    (None, None, None, []) when nothing is available.
     """
-    valid_end = case.init_dt + timedelta(hours=end_fhour)
-    ensure_stage4_files(case.init_dt, valid_end, case.stage4_cache_dir)
-    idx = index_stage4_24h_conus(case.stage4_cache_dir)
+    ensure_stage4_files(start_dt, end_dt, cache_dir)
+    idx = index_stage4_24h_conus(cache_dir)
     if not idx:
-        return None, None, None, None
-
+        return None, None, None, []
     total = lat2d = lon2d = None
     used = []
-    day = case.init_dt.date()
-    while day <= valid_end.date():
+    day = start_dt.date()
+    while day <= end_dt.date():
         key = day.strftime("%Y%m%d")
         path = idx.get(key)
         if path is not None:
@@ -198,7 +202,29 @@ def stage4_total(case, end_fhour):
                   f"({lat[j, i]:.2f}, {lon[j, i]:.2f})  "
                   f">300mm:{int((data > 300).sum())}  >600mm:{int((data > 600).sum())}")
         day += timedelta(days=1)
+    if total is None:
+        return None, None, None, []
+    return lat2d, lon2d, total, used
 
+
+def stage4_label(used):
+    """Window label from the used day keys (24h file D covers 12Z(D-1)->12Z(D))."""
+    d0 = datetime.strptime(used[0], "%Y%m%d") - timedelta(hours=12)
+    d1 = datetime.strptime(used[-1], "%Y%m%d")
+    return f"~{d0:%m-%d %HZ} – {d1:%m-%d 12Z} ({len(used)}×24h)"
+
+
+def stage4_total(case, end_fhour):
+    """Sum the daily CONUS 24h Stage IV files spanning the forecast window,
+    then mask the total to the full-track TC swath (same footprint as HAFS).
+
+    24h files are valid 12Z->12Z so they don't align exactly with the 00Z-init
+    0->end_fhour window; we sum every day the event touches.  Returns
+    (lat2d, lon2d, total_mm, label) or (None, None, None, None) if unavailable.
+    """
+    valid_end = case.init_dt + timedelta(hours=end_fhour)
+    lat2d, lon2d, total, used = stage4_sum_days(
+        case.stage4_cache_dir, case.init_dt, valid_end)
     if total is None:
         return None, None, None, None
 
@@ -216,11 +242,25 @@ def stage4_total(case, end_fhour):
           f"({lat2d[j, i]:.2f}, {lon2d[j, i]:.2f})  "
           f">500mm:{int((total > 500).sum())}  >800mm:{int((total > 800).sum())}")
 
-    # 24h file dated D covers 12Z(D-1)->12Z(D); report the spanned window.
-    d0 = datetime.strptime(used[0], "%Y%m%d") - timedelta(hours=12)
-    d1 = datetime.strptime(used[-1], "%Y%m%d")
-    label = f"~{d0:%m-%d %HZ} – {d1:%m-%d 12Z} ({len(used)}×24h)"
-    return lat2d, lon2d, total, label
+    return lat2d, lon2d, total, stage4_label(used)
+
+
+def stage4_total_window(cache_dir, valid_start, valid_end, track_points,
+                        radius_km):
+    """Stage IV touched-days total for an absolute window, masked to the
+    union of circles of radius_km around track_points [(lat, lon), ...].
+
+    Returns (lat2d, lon2d, total_mm, label) or (None, None, None, None).
+    """
+    lat2d, lon2d, total, used = stage4_sum_days(cache_dir, valid_start,
+                                                valid_end)
+    if total is None:
+        return None, None, None, None
+    swath = np.zeros(lat2d.shape, dtype=bool)
+    for tlat, tlon in track_points:
+        swath |= haversine_km(tlat, tlon, lat2d, lon2d) <= radius_km
+    total = np.where(swath, total, 0.0)
+    return lat2d, lon2d, total, stage4_label(used)
 
 
 # =============================================================================

@@ -116,6 +116,14 @@ def position_on_track(track, valid_dt):
     return lats[-1], lons[-1]
 
 
+def make_fixed_grid(domain, grid_res):
+    """Fixed lat/lon verification/plot mesh from a domain + resolution."""
+    lat_min, lat_max, lon_min, lon_max = domain
+    fixed_lons = np.arange(lon_min, lon_max + grid_res, grid_res)
+    fixed_lats = np.arange(lat_min, lat_max + grid_res, grid_res)
+    return np.meshgrid(fixed_lons, fixed_lats)[::-1]  # (grid_lat, grid_lon)
+
+
 @dataclass
 class StormCase:
     run_dir: Path
@@ -141,10 +149,7 @@ class StormCase:
 
     def fixed_grid(self):
         """Fixed lat/lon verification/plot mesh from domain + grid_res."""
-        lat_min, lat_max, lon_min, lon_max = self.domain
-        fixed_lons = np.arange(lon_min, lon_max + self.grid_res, self.grid_res)
-        fixed_lats = np.arange(lat_min, lat_max + self.grid_res, self.grid_res)
-        return np.meshgrid(fixed_lons, fixed_lats)[::-1]  # (grid_lat, grid_lon)
+        return make_fixed_grid(self.domain, self.grid_res)
 
     def parent_glob(self):
         return f"**/*{self.init_str}*parent.atm.f*.grb2"
@@ -223,6 +228,11 @@ def from_yaml(yaml_path):
     with open(yaml_path) as fh:
         cfg = yaml.safe_load(fh) or {}
     if "run_dir" not in cfg:
+        if "run_root" in cfg:
+            raise KeyError(
+                f"{yaml_path} looks like a cycles YAML (has 'run_root') — "
+                f"run it with the 'cycles' command."
+            )
         raise KeyError(f"'run_dir' is required in {yaml_path}")
     run_dir = Path(cfg["run_dir"])
 
@@ -275,5 +285,156 @@ def from_yaml(yaml_path):
         fhours_filter=cfg.get("fhours"),
         track=track,
         case_slug=yaml_path.stem,
+        init_str=init_str,
+    )
+
+
+# =============================================================================
+# Cycle comparison: config + window math
+# =============================================================================
+
+_INIT_DIR_RE = re.compile(r"^\d{10}$")
+
+
+@dataclass
+class CyclesCase:
+    """One storm x model across initializations, scored on a common window."""
+    run_root: Path
+    valid_start: datetime
+    valid_end: datetime
+    storm_name: str
+    model_label: str
+    domain: tuple          # (lat_min, lat_max, lon_min, lon_max)
+    grid_res: float
+    mask_radius_km: float
+    display_radius_km: float
+    thresholds_mm: list
+    ets_threshold_mm: float
+    out_dir: Path
+    mrms_cache_dir: Path
+    stage4_cache_dir: Path
+    inits: list            # explicit YYYYMMDDHH strings, or None to discover
+    case_slug: str
+
+    def fixed_grid(self):
+        """Fixed lat/lon verification/plot mesh from domain + grid_res."""
+        return make_fixed_grid(self.domain, self.grid_res)
+
+    @property
+    def output_slug(self):
+        """YAML stem + window, so different windows never overwrite output."""
+        return (f"{self.case_slug}_{self.valid_start:%Y%m%d%H}_"
+                f"{self.valid_end:%Y%m%d%H}")
+
+
+def discover_inits(run_root):
+    """Sorted YYYYMMDDHH-named subdirectories of run_root."""
+    root = Path(run_root)
+    if not root.is_dir():
+        raise FileNotFoundError(f"run_root does not exist: {root}")
+    inits = []
+    for p in root.iterdir():
+        if not (p.is_dir() and _INIT_DIR_RE.fullmatch(p.name)):
+            continue
+        try:
+            datetime.strptime(p.name, "%Y%m%d%H")
+        except ValueError:
+            continue
+        inits.append(p.name)
+    return sorted(inits)
+
+
+def window_hours(init_dt, valid_start, valid_end):
+    """(f1, f2): the common valid window as forecast hours of one cycle."""
+    f1 = (valid_start - init_dt).total_seconds() / 3600.0
+    f2 = (valid_end - init_dt).total_seconds() / 3600.0
+    return int(round(f1)), int(round(f2))
+
+
+def cycle_eligibility(init_dt, max_fhour, valid_start, valid_end):
+    """(eligible, reason). Eligible iff the run fully covers the window."""
+    if init_dt > valid_start:
+        return False, (f"init {init_dt:%Y-%m-%d %HZ} is after the window "
+                       f"start {valid_start:%Y-%m-%d %HZ}")
+    run_end = init_dt + timedelta(hours=max_fhour)
+    if run_end < valid_end:
+        return False, (f"run ends {run_end:%Y-%m-%d %HZ}, before the "
+                       f"window end {valid_end:%Y-%m-%d %HZ}")
+    return True, ""
+
+
+def cycles_from_yaml(yaml_path):
+    """Load a CyclesCase from a cycles YAML (run_root/valid_start/valid_end
+    and domain required)."""
+    yaml_path = Path(yaml_path)
+    with open(yaml_path) as fh:
+        cfg = yaml.safe_load(fh) or {}
+    if "run_root" not in cfg:
+        hint = (" This looks like a per-init case YAML (has 'run_dir'); "
+                "the 'cycles' command needs a cycles YAML with 'run_root'."
+                if "run_dir" in cfg else "")
+        raise KeyError(
+            f"'run_root' is required in a cycles YAML ({yaml_path}).{hint}")
+    for key in ("valid_start", "valid_end", "domain"):
+        if key not in cfg:
+            raise KeyError(f"'{key}' is required in a cycles YAML "
+                           f"({yaml_path})")
+    valid_start = datetime.strptime(str(cfg["valid_start"]), "%Y%m%d%H")
+    valid_end = datetime.strptime(str(cfg["valid_end"]), "%Y%m%d%H")
+    if valid_end <= valid_start:
+        raise ValueError(
+            f"valid_end must be after valid_start in {yaml_path}")
+    run_root = Path(cfg["run_root"])
+    out_dir = (Path(cfg["out_dir"]) if cfg.get("out_dir")
+               else Path("analysis/output") / yaml_path.stem)
+    return CyclesCase(
+        run_root=run_root,
+        valid_start=valid_start,
+        valid_end=valid_end,
+        storm_name=cfg.get("storm_name", "Storm"),
+        model_label=(cfg["model_label"] if "model_label" in cfg
+                     else detect_model(run_root)),
+        domain=tuple(cfg["domain"]),
+        grid_res=float(cfg.get("grid_res", 0.05)),
+        mask_radius_km=float(cfg.get("mask_radius_km", 500.0)),
+        display_radius_km=float(cfg.get("display_radius_km", 750.0)),
+        thresholds_mm=cfg.get("thresholds_mm", list(_DEFAULT_THRESHOLDS)),
+        ets_threshold_mm=float(cfg.get("ets_threshold_mm", 25.0)),
+        out_dir=out_dir,
+        mrms_cache_dir=Path(cfg.get("mrms_cache_dir", "/tmp/mrms_cache")),
+        stage4_cache_dir=Path(cfg.get("stage4_cache_dir",
+                                      "/tmp/stage4_cache")),
+        inits=[str(i) for i in cfg["inits"]] if cfg.get("inits") else None,
+        case_slug=yaml_path.stem,
+    )
+
+
+def cycle_storm_case(ccase, init_str):
+    """StormCase for one cycle of a CyclesCase (run_dir = run_root/<init>).
+
+    Track comes from the cycle's own .atcfunix; grid/mask/output settings
+    are inherited from the CyclesCase so every cycle verifies identically.
+    """
+    run_dir = ccase.run_root / init_str
+    atcf_path = find_atcfunix(run_dir)
+    _, _, track = parse_atcfunix(atcf_path)
+    if not track:
+        raise ValueError(f"Parsed 0 track fixes from {atcf_path}")
+    return StormCase(
+        run_dir=run_dir,
+        init_dt=datetime.strptime(init_str, "%Y%m%d%H"),
+        storm_name=ccase.storm_name,
+        model_label=ccase.model_label,
+        domain=ccase.domain,
+        grid_res=ccase.grid_res,
+        mask_radius_km=ccase.mask_radius_km,
+        display_radius_km=ccase.display_radius_km,
+        thresholds_mm=ccase.thresholds_mm,
+        out_dir=ccase.out_dir,
+        mrms_cache_dir=ccase.mrms_cache_dir,
+        stage4_cache_dir=ccase.stage4_cache_dir,
+        fhours_filter=None,
+        track=track,
+        case_slug=ccase.case_slug,
         init_str=init_str,
     )

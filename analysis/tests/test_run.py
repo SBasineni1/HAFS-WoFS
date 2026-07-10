@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import run
+from run import parse_args
 
 
 def test_parse_args_defaults_to_all():
@@ -32,6 +33,12 @@ def test_parse_args_accepts_compare():
 def test_parse_args_accepts_rmse():
     yaml_path, command = run.parse_args(["case.yaml", "rmse"])
     assert command == "rmse"
+
+
+def test_parse_args_accepts_cycles():
+    yaml_path, command = parse_args(["case.yaml", "cycles"])
+    assert yaml_path == "case.yaml"
+    assert command == "cycles"
 
 
 def _run_all():

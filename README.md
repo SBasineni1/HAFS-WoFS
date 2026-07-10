@@ -11,6 +11,9 @@ configuration (HFSA or HFSB), produces:
 2. **An ETS skill plot + table** — Equitable Threat Score vs rainfall threshold
    for the HAFS parent *and* 2-km nest, each verified against MRMS and Stage IV
    over the TC rainfall swath (`ets_full_<case>.png` + `.csv`).
+3. **A cycle-comparison product** — for one storm and model configuration,
+   scores every eligible initialization over the same rainfall window and
+   shared verification footprint (`cycles` mode).
 
 Running a new storm only requires a small YAML file pointing at the run
 directory — the storm track, init time, and HAFS-A/B label are read
@@ -86,6 +89,7 @@ python analysis/run.py storms/<case>.yaml all      # parent figure + ETS + RMSE 
 python analysis/run.py storms/<case>.yaml parent   # 3-panel QPF figure only
 python analysis/run.py storms/<case>.yaml ets      # ETS plot + CSV only
 python analysis/run.py storms/<case>.yaml rmse     # RMSE scatter + CSV only
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles  # cross-init comparison
 ```
 
 The two shipped examples:
@@ -109,7 +113,16 @@ ets_full_<case>.png       # ETS vs threshold: parent/nest × MRMS/Stage IV
 ets_full_<case>.csv       # the same scores as a table (a/b/c/d, ETS, bias, POD, FAR, CSI)
 rmse_scatter_<case>.png   # forecast-vs-observed hexbin panels: parent/nest × MRMS/Stage IV
 rmse_<case>.csv           # storm-total continuous scores (n, RMSE, MAE, bias, r)
+cycles_<slug>.csv         # per-init continuous + categorical scores for a common window
+cycles_metrics_<slug>.png # RMSE, bias, and ETS vs initialization time
+cycles_maps_<slug>.png    # nest window-QPF panels per init + an observed-MRMS panel
 ```
+
+For `cycles` outputs, `<slug>` is `<cycles-yaml-stem>_<valid-start>_<valid-end>`
+(for example, `helene_hfsa_cycles_2024092600_2024092800`). The cycles CSV is
+long format: one row per initialization, forecast, observation, and rainfall
+threshold. `bias_mm` is continuous mean forecast-minus-observation error in
+millimetres; `bias` is categorical frequency bias.
 
 > **Init tagging:** every output filename is automatically stamped with the run's
 > initialization time (e.g. `parent_qpf_helene_hfsa_2024092400.png`,
@@ -150,7 +163,40 @@ Then `python analysis/run.py storms/<storm>_<model>.yaml all`.
 
 ---
 
-## 5. Comparing HFSA vs HFSB (head-to-head)
+## 5. Comparing initialization cycles
+
+Use `cycles` to compare a single model configuration's forecasts as their
+initializations approach landfall. It takes a storm-level cycles YAML rather
+than a normal per-init case YAML:
+
+```bash
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
+```
+
+```yaml
+# storms/<storm>_<model>_cycles.yaml
+run_root: /work2/.../<storm>/HFSA  # YYYYMMDDHH subdirectories, one per cycle
+valid_start: 2024092600            # REQUIRED: common UTC window start
+valid_end: 2024092800              # REQUIRED: common UTC window end
+domain: [15.0, 42.0, -100.0, -60.0] # REQUIRED: lat_min, lat_max, lon_min, lon_max
+
+# Optional:
+storm_name: Hurricane <Name>
+mask_radius_km: 500
+out_dir: analysis/output/<storm>_<model>_cycles
+inits: [2024092400, 2024092412]    # otherwise discover YYYYMMDDHH directories
+ets_threshold_mm: 25               # headline threshold in the metrics figure
+```
+
+`run_root` subdirectories named `YYYYMMDDHH` are discovered and sorted unless
+you set `inits:` explicitly. A cycle is included only when
+`init ≤ valid_start` and `init + maximum forecast hour ≥ valid_end`.
+Skipped cycles are printed with their reason; a cycle with missing GRIB data
+inside the window is also skipped so the remaining eligible cycles can run.
+
+---
+
+## 6. Comparing HFSA vs HFSB (head-to-head)
 
 To score two configs of the same storm against each other over one **shared,
 fair verification swath** (the NHC best track), use a comparison config.
@@ -190,7 +236,7 @@ totals).
 
 ---
 
-## 6. How to read the ETS plot
+## 7. How to read the ETS plot
 
 Each `ets_full_<case>.png` has four curves for one model run:
 
@@ -209,7 +255,7 @@ fair, apples-to-apples read.
 
 ---
 
-## 7. How to read the RMSE scatter
+## 8. How to read the RMSE scatter
 
 Each `rmse_scatter_<case>.png` panel plots every swath grid point's
 storm-total rainfall: observed (x) vs forecast (y), with a dotted 1:1
@@ -227,6 +273,28 @@ ETS asks "did we put rain ≥ X in the right places", the scatter asks
 
 ---
 
+## 9. How to read the cycle comparison
+
+Every included cycle is accumulated over the same absolute
+`valid_start`–`valid_end` window and verified against the same observed total.
+Therefore, changes in RMSE, bias, or ETS across initialization times describe
+lead-time differences rather than changing accumulation lengths.
+
+All cycles are scored on one shared swath: the union of each included cycle's
+forecast-track positions within the valid window, expanded by
+`mask_radius_km`. A run with an inaccurate track is thus penalized for placing
+rain in the wrong location; that is intentionally part of the comparison.
+
+The small-multiple map shows each cycle's **nest** window-total QPF plus the
+MRMS observed total; it does not include parent-domain map panels. Metrics and
+CSV scores include both parent and nest forecasts. Stage IV is scored when it
+is available, but remains CONUS-only and is based on 12Z–12Z daily products
+summed over the days touched by the requested window, so it approximates an
+arbitrary UTC window. If Stage IV is unavailable, the product continues with
+MRMS-only scoring and marks that caveat in its output.
+
+---
+
 ## Project layout
 
 ```
@@ -237,6 +305,7 @@ analysis/
   parent_qpf.py   # parent QPF vs MRMS vs Stage IV 3-panel + Stage IV downloader
   ets_full.py     # combined parent+nest ETS figure + CSV
   ets_score.py    # ETS contingency math + MRMS/swath helpers
+  cycles.py       # cross-initialization comparison on a common valid window
   tests/          # standalone unit tests (run: python3 analysis/tests/<file>.py)
 storms/           # per-storm YAML case files
 analysis/output/  # generated figures (gitignored)

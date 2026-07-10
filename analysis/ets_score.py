@@ -58,27 +58,41 @@ def regrid_mrms_to_fixed(mlat, mlon, mdata, grid_lat, grid_lon):
     return interp(pts).reshape(grid_lat.shape)
 
 
-def build_mrms_total(case, max_fhour, grid_lat, grid_lon):
-    """Accumulate MRMS 1H QPE over 1..max_fhour on its native grid, then regrid."""
+def build_mrms_total_window(valid_start, valid_end, mrms_cache_dir,
+                            grid_lat, grid_lon):
+    """MRMS 1H QPE summed over (valid_start, valid_end], then regridded.
+
+    Absolute-time core of build_mrms_total: MRMS hour files are stamped by
+    hour END, so the file at valid_start + 1h is the first inside the
+    window. Raises RuntimeError when no hour can be loaded.
+    """
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
+    n_hours = int(round((valid_end - valid_start).total_seconds() / 3600))
     mrms_sum = None
     mlat = mlon = None
-    for h in range(1, max_fhour + 1):
-        t = case.init_dt + timedelta(hours=h)
+    for h in range(1, n_hours + 1):
+        t = valid_start + timedelta(hours=h)
         try:
-            lat, lon, data = load_mrms_hour(s3, t, case.mrms_cache_dir)
+            lat, lon, data = load_mrms_hour(s3, t, mrms_cache_dir)
             if mrms_sum is None:
                 mlat, mlon = lat, lon
                 mrms_sum = np.zeros_like(data)
             mrms_sum += data
-            if h % 12 == 0 or h == max_fhour:
-                print(f"  MRMS h{h:03d}/{max_fhour} ({t.strftime('%Y-%m-%d %HZ')})")
+            if h % 12 == 0 or h == n_hours:
+                print(f"  MRMS h{h:03d}/{n_hours} ({t:%Y-%m-%d %HZ})")
         except Exception as e:
             print(f"  MRMS h{h:03d} unavailable: {e}")
     if mrms_sum is None:
         raise RuntimeError("No MRMS hours could be loaded.")
     return regrid_mrms_to_fixed(mlat, mlon, mrms_sum, grid_lat, grid_lon)
+
+
+def build_mrms_total(case, max_fhour, grid_lat, grid_lon):
+    """Accumulate MRMS 1H QPE over 1..max_fhour on its native grid, then regrid."""
+    return build_mrms_total_window(
+        case.init_dt, case.init_dt + timedelta(hours=max_fhour),
+        case.mrms_cache_dir, grid_lat, grid_lon)
 
 
 def tc_swath_mask(case, max_fhour, grid_lat, grid_lon):
