@@ -21,6 +21,39 @@ automatically from the run's `.atcfunix` track and path.
 
 ---
 
+## Quick start
+
+One-time setup, then one command per product — details in the numbered
+sections below.
+
+```bash
+# Setup (once, on Orion/Hercules — §1)
+module load miniconda3
+conda env create -f environment.yml
+conda activate hafs
+
+# Per-run products for one initialization (§3): qualitative parent-domain
+# rainfall map + ETS curves + RMSE scatter, all in one go
+python analysis/run.py storms/helene_hfsa.yaml all
+
+# ...or individually:
+python analysis/run.py storms/helene_hfsa.yaml parent   # qualitative 3-panel rainfall map
+python analysis/run.py storms/helene_hfsa.yaml ets      # ETS vs threshold + CSV
+python analysis/run.py storms/helene_hfsa.yaml rmse     # RMSE/MAE/bias/r scatter + CSV
+
+# Another initialization of the same storm: copy the YAML, change `init:` (§4)
+python analysis/run.py storms/helene_hfsa_2024092412.yaml all
+
+# Cross-initialization comparison (§5): every eligible cycle scored over one
+# common valid window — metrics-vs-init figure + QPF map small-multiples
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
+
+# Pull the figures to your laptop (run this FROM the laptop — §3)
+scp -r <user>@<cluster>:/path/to/HAFS-WoFS/analysis/output/<case> ~/Downloads/
+```
+
+---
+
 ## 1. Setup (conda on Orion / Hercules)
 
 The framework needs a Python 3 environment with the scientific GRIB stack. The
@@ -85,8 +118,8 @@ HAFS-A vs HAFS-B is auto-detected from `HFSA` / `HFSB` in the path.
 From the repo root, with the env activated:
 
 ```bash
-python analysis/run.py storms/<case>.yaml all      # parent figure + ETS + RMSE (default)
-python analysis/run.py storms/<case>.yaml parent   # 3-panel QPF figure only
+python analysis/run.py storms/<case>.yaml all      # parent map + ETS + RMSE (default)
+python analysis/run.py storms/<case>.yaml parent   # qualitative 3-panel rainfall map only
 python analysis/run.py storms/<case>.yaml ets      # ETS plot + CSV only
 python analysis/run.py storms/<case>.yaml rmse     # RMSE scatter + CSV only
 python analysis/run.py storms/helene_hfsa_cycles.yaml cycles  # cross-init comparison
@@ -160,6 +193,11 @@ out_dir: analysis/output/<storm>_<model>
 ```
 
 Then `python analysis/run.py storms/<storm>_<model>.yaml all`.
+
+For **another initialization of the same storm**, copy the YAML and change
+only `init:` (see `storms/helene_hfsa_2024092412.yaml`) — `run_dir` stays the
+storm/model root, and the init-tagged output filenames keep runs from
+overwriting each other even in a shared `out_dir`.
 
 ---
 
