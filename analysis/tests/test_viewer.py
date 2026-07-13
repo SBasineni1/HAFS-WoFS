@@ -51,3 +51,37 @@ def test_discover_configs_filters_by_stem():
         (root / "one.yaml").write_text("run_dir: /one\n")
         (root / "two.yaml").write_text("run_dir: /two\n")
         assert [p.stem for p in viewer.discover_configs(root, ["two"])] == ["two"]
+
+
+def test_remote_access_instructions_use_ssh_tunnel():
+    lines = viewer.access_instructions(
+        "127.0.0.1", 8765, "hercules",
+        environ={"SSH_CONNECTION": "192.0.2.1 50000 192.0.2.2 22"},
+    )
+    assert "remote login node" in lines[0]
+    assert "ssh -N -L 8765:127.0.0.1:8765 hercules" in lines[2]
+    assert "  http://127.0.0.1:8765" in lines
+    assert any("--export" in line for line in lines)
+
+
+def test_local_access_instructions_need_no_tunnel():
+    lines = viewer.access_instructions("127.0.0.1", 8765, environ={})
+    assert lines == ["Viewer: http://127.0.0.1:8765  (Ctrl-C to stop)"]
+
+
+def test_offline_export_embeds_graphics():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "plot.png").write_bytes(b"fake png")
+        manifest = {"updated": "2026-01-01T00:00:00", "cases": [{
+            "id": "alpha", "storm": "Alpha", "model": "HAFS-A",
+            "init": "2025010100", "kind": "case", "config": "alpha.yaml",
+            "files": [{"name": "plot.png", "url": "plot.png",
+                       "modified": "2026-01-01T00:00:00", "size": 8}],
+        }]}
+        destination = root / "viewer.html"
+        viewer.export_offline_html(manifest, root, destination)
+        html = destination.read_text()
+        assert "data:image/png;base64," in html
+        assert "Alpha" in html
+        assert "refresh();setInterval" not in html

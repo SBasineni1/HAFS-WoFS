@@ -47,6 +47,7 @@ CLAUDE.md
 *.log
 *.tmp
 analysis/output/viewer-manifest.json
+analysis/output/hafs-viewer.html
 
 # Superpowers workflow scratch (specs, plans, ledgers) - local only
 .superpowers/

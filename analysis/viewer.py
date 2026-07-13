@@ -14,7 +14,9 @@ another terminal appear automatically.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -207,14 +209,34 @@ label{font-size:12px;color:var(--muted);display:grid;gap:4px}select,input{min-wi
 let manifest={cases:[]}; const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function options(id,values,label){const e=document.getElementById(id),old=e.value;e.innerHTML=`<option value="">All ${label}</option>`+[...new Set(values.filter(Boolean))].sort().map(v=>`<option>${esc(v)}</option>`).join('');e.value=old}
 function title(name){if(name.startsWith('parent_qpf_'))return'Side-by-side QPF';if(name.startsWith('ets_'))return'ETS';if(name.startsWith('rmse_scatter_'))return'RMSE';if(name.startsWith('cycles_metrics_'))return'Cycle metrics';if(name.startsWith('cycles_maps_'))return'Cycle maps';if(name.startsWith('compare_'))return'Model comparison';return name.replace(/\.png$/,'').replaceAll('_',' ')}
+const fileUrl=f=>f.data||('/'+encodeURI(f.url)),imageUrl=f=>f.data||(fileUrl(f)+'?v='+encodeURIComponent(f.modified));
 function render(){options('storm',manifest.cases.map(c=>c.storm),'storms');options('model',manifest.cases.map(c=>c.model),'models');options('init',manifest.cases.map(c=>c.init),'initializations');
  const filters=['storm','model','init'].map(id=>document.getElementById(id).value),q=document.getElementById('search').value.toLowerCase();let shown=0;
  const html=manifest.cases.filter(c=>(!filters[0]||c.storm===filters[0])&&(!filters[1]||c.model===filters[1])&&(!filters[2]||c.init===filters[2])).map(c=>{const pics=c.files.filter(f=>f.name.endsWith('.png')&&(!q||(c.storm+' '+c.model+' '+f.name).toLowerCase().includes(q))),tables=c.files.filter(f=>f.name.endsWith('.csv')&&(!q||f.name.toLowerCase().includes(q)));if(q&&!pics.length&&!tables.length)return'';shown++;
- return `<section class="case"><h2>${esc(c.storm)}</h2><div class="meta">${esc([c.model,c.init,c.kind,c.config].filter(Boolean).join(' · '))}</div>${pics.length?`<div class="grid">${pics.map(f=>`<article class="card"><a href="/${encodeURI(f.url)}" target="_blank"><img src="/${encodeURI(f.url)}?v=${encodeURIComponent(f.modified)}" loading="lazy" alt="${esc(title(f.name))}"></a><div class="caption"><a href="/${encodeURI(f.url)}" target="_blank">${esc(title(f.name))}</a><span class="stamp">${esc(f.modified.replace('T',' '))}</span></div></article>`).join('')}</div>`:'<div class="empty">No plots generated yet. Run with <code>--generate missing</code>.</div>'}${tables.length?`<div class="tables">${tables.map(f=>`<a href="/${encodeURI(f.url)}" target="_blank">CSV · ${esc(f.name)}</a>`).join('')}</div>`:''}</section>`}).join('');
+ return `<section class="case"><h2>${esc(c.storm)}</h2><div class="meta">${esc([c.model,c.init,c.kind,c.config].filter(Boolean).join(' · '))}</div>${pics.length?`<div class="grid">${pics.map(f=>`<article class="card"><a href="${fileUrl(f)}" target="_blank"><img src="${imageUrl(f)}" loading="lazy" alt="${esc(title(f.name))}"></a><div class="caption"><a href="${fileUrl(f)}" target="_blank">${esc(title(f.name))}</a><span class="stamp">${esc(f.modified.replace('T',' '))}</span></div></article>`).join('')}</div>`:'<div class="empty">No plots generated yet. Run with <code>--generate missing</code>.</div>'}${tables.length?`<div class="tables">${tables.map(f=>`<a href="${fileUrl(f)}" target="_blank" download="${esc(f.name)}">CSV · ${esc(f.name)}</a>`).join('')}</div>`:''}</section>`}).join('');
  document.getElementById('content').innerHTML=html||'<div class="empty">No matching graphics.</div>';document.getElementById('status').textContent=`${shown} group${shown===1?'':'s'} · updated ${manifest.updated.replace('T',' ')}`}
 async function refresh(){try{const r=await fetch('/api/manifest',{cache:'no-store'});manifest=await r.json();render()}catch(e){document.getElementById('status').textContent='Viewer disconnected'}}
 ['storm','model','init','search'].forEach(id=>document.getElementById(id).addEventListener(id==='search'?'input':'change',render));refresh();setInterval(refresh,5000);
 </script></body></html>'''
+
+
+def export_offline_html(manifest: dict, output_root: Path, destination: Path) -> Path:
+    """Write a self-contained gallery that needs neither server nor tunnel."""
+    exported = json.loads(json.dumps(manifest))
+    for case in exported["cases"]:
+        for record in case["files"]:
+            source = output_root / record["url"]
+            mime = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+            payload = base64.b64encode(source.read_bytes()).decode("ascii")
+            record["data"] = f"data:{mime};base64,{payload}"
+    html = HTML.replace(
+        "let manifest={cases:[]};",
+        "let manifest=" + json.dumps(exported, separators=(",", ":")) + ";",
+        1,
+    ).replace("refresh();setInterval(refresh,5000);", "render();", 1)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(html)
+    return destination
 
 
 def make_handler(configs: list[Path], output_root: Path):
@@ -250,6 +272,26 @@ def make_handler(configs: list[Path], output_root: Path):
     return ViewerHandler
 
 
+def access_instructions(host: str, port: int, ssh_host: str | None = None,
+                        environ=None) -> list[str]:
+    """User-facing URLs, including an SSH tunnel hint on remote systems."""
+    environ = os.environ if environ is None else environ
+    loopback = host in {"127.0.0.1", "localhost", "::1"}
+    if environ.get("SSH_CONNECTION") and loopback:
+        destination = ssh_host or environ.get("HAFS_VIEWER_SSH_HOST") or "<your Hercules SSH host>"
+        return [
+            "Viewer is running on the remote login node.",
+            "On your laptop, open a SECOND terminal and run:",
+            f"  ssh -N -L {port}:127.0.0.1:{port} {destination}",
+            "Keep both terminals open, then browse to:",
+            f"  http://127.0.0.1:{port}",
+            "If Hercules rejects forwarding as 'administratively prohibited',",
+            "stop this server and run: python analysis/viewer.py --export",
+        ]
+    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    return [f"Viewer: http://{display_host}:{port}  (Ctrl-C to stop)"]
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", default=[], metavar="NAME",
@@ -260,6 +302,11 @@ def parse_args(argv=None):
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--ssh-host",
+                        help="your laptop's SSH alias for this HPC (instructions only)")
+    parser.add_argument("--export", nargs="?", const="analysis/output/hafs-viewer.html",
+                        metavar="HTML",
+                        help="write one offline HTML gallery and exit (default: analysis/output/hafs-viewer.html)")
     parser.add_argument("--no-serve", action="store_true",
                         help="only generate products and write viewer-manifest.json")
     return parser.parse_args(argv)
@@ -278,10 +325,25 @@ def main(argv=None):
     print(f"Indexed {len(manifest['cases'])} graphics groups in {manifest_path}")
     if failures:
         print(f"Generation finished with {len(failures)} failed config(s); existing plots remain viewable.")
+    if args.export:
+        destination = _path_from_repo(args.export).resolve()
+        export_offline_html(manifest, output_root, destination)
+        size_mb = destination.stat().st_size / (1024 * 1024)
+        print(f"Offline viewer: {destination} ({size_mb:.1f} MB)")
+        print("Download this one file and open it in your laptop browser.")
+        return 1 if failures else 0
     if args.no_serve:
         return 1 if failures else 0
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(configs, output_root))
-    print(f"Viewer: http://{args.host}:{args.port}  (Ctrl-C to stop)")
+    try:
+        server = ThreadingHTTPServer((args.host, args.port),
+                                     make_handler(configs, output_root))
+    except OSError as exc:
+        raise SystemExit(
+            f"Could not start viewer on {args.host}:{args.port}: {exc}\n"
+            f"Try another port, for example: --port {args.port + 1}"
+        ) from exc
+    for line in access_instructions(args.host, args.port, args.ssh_host):
+        print(line)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

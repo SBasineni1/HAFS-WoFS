@@ -146,6 +146,29 @@ selectors put the side-by-side QPF map, ETS curve, RMSE scatter, and their CSVs
 in one gallery. The page rescans `analysis/output/` every five seconds, so new
 graphics appear automatically while it remains open.
 
+When the viewer runs on Hercules, `127.0.0.1` refers to the remote login node.
+Keep it running and create an SSH tunnel from a second terminal on your laptop:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 <your-normal-Hercules-SSH-host>
+```
+
+Then open `http://127.0.0.1:8765` on the laptop. The viewer detects an SSH
+session and prints these instructions automatically. Pass `--ssh-host hercules`
+if you want it to print your exact SSH alias.
+
+If Hercules rejects the tunnel with `administratively prohibited`, export a
+single offline gallery instead:
+
+```bash
+python analysis/viewer.py --export
+```
+
+Download `analysis/output/hafs-viewer.html` through the
+[Hercules Open OnDemand portal](https://hercules-ood.hpc.msstate.edu), then open
+that file on the laptop. Its plots and CSV links are embedded, so it needs no
+server or network connection. Re-export after generating new graphics.
+
 To make plots and view them with one command:
 
 ```bash
