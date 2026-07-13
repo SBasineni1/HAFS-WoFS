@@ -66,6 +66,10 @@ def build_mrms_total_window(valid_start, valid_end, mrms_cache_dir,
     hour END, so the file at valid_start + 1h is the first inside the
     window. Raises RuntimeError when no hour can be loaded.
     """
+    # A fresh compute/login node may not have the configured /tmp cache yet.
+    # Create it here before load_mrms_hour tries to write a downloaded GRIB.
+    mrms_cache_dir = Path(mrms_cache_dir)
+    mrms_cache_dir.mkdir(parents=True, exist_ok=True)
     s3 = boto3.client("s3", region_name="us-east-1",
                       config=Config(signature_version=UNSIGNED))
     n_hours = int(round((valid_end - valid_start).total_seconds() / 3600))

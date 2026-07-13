@@ -259,6 +259,8 @@ def mrms_s3_key(hour_end_dt):
 
 
 def load_mrms_hour(s3, hour_end_dt, cache_dir):
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     key, fname = mrms_s3_key(hour_end_dt)
     cache_path = cache_dir / fname.replace(".gz", "")
     if not cache_path.exists():

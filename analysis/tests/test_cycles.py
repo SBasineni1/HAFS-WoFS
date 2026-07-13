@@ -212,6 +212,30 @@ def test_build_mrms_total_window_sums_requested_hours():
     assert np.allclose(total, 3.0)
 
 
+def test_build_mrms_total_window_creates_cache_directory():
+    """A new /tmp-style cache path must exist before the hour loader runs."""
+    import ets_score
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = Path(tmp) / "new" / "mrms_cache"
+
+        def fake_load(s3, hour_end_dt, cache_dir):
+            assert Path(cache_dir).is_dir()
+            axis = np.linspace(0.0, 1.0, 3)
+            return axis, axis, np.ones((3, 3))
+
+        original = ets_score.load_mrms_hour
+        ets_score.load_mrms_hour = fake_load
+        try:
+            glon, glat = np.meshgrid(np.linspace(0.2, 0.8, 2),
+                                     np.linspace(0.2, 0.8, 2))
+            ets_score.build_mrms_total_window(
+                datetime(2024, 9, 24, 0), datetime(2024, 9, 24, 1),
+                cache, glat, glon)
+        finally:
+            ets_score.load_mrms_hour = original
+        assert cache.is_dir()
+
+
 def test_parent_path_at_fhour():
     from parent_qpf import parent_path_at_fhour
     with tempfile.TemporaryDirectory() as tmp:
