@@ -14,9 +14,6 @@ configuration (HFSA or HFSB), produces:
 3. **A cycle-comparison product** — for one storm and model configuration,
    scores every eligible initialization over the same rainfall window and
    shared verification footprint (`cycles` mode).
-4. **Paper-style TC QPF verification** — 6-h lead-time statistics, best-track
-   shifting, RMW-normalized composites and radial distributions, rainfall
-   objects, and homogeneous multi-storm aggregation (`paper` mode).
 
 Running a new storm only requires a small YAML file pointing at the run
 directory — the storm track, init time, and HAFS-A/B label are read
@@ -50,12 +47,6 @@ python analysis/run.py storms/helene_hfsa_2024092412.yaml all
 # Cross-initialization comparison (§5): every eligible cycle scored over one
 # common valid window — metrics-vs-init figure + QPF map small-multiples
 python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
-
-# Newman et al. (2024) figure families for one storm / multiple models
-python analysis/run.py storms/helene_paper.yaml paper
-
-# Run each listed storm and pool the homogeneous multi-storm sample
-python analysis/run.py storms/paper_multistorm.yaml paper
 
 # Browse every storm/init and its QPF, ETS, and RMSE figures in one place
 python analysis/viewer.py
@@ -138,7 +129,6 @@ python analysis/run.py storms/<case>.yaml parent   # qualitative 3-panel rainfal
 python analysis/run.py storms/<case>.yaml ets      # ETS plot + CSV only
 python analysis/run.py storms/<case>.yaml rmse     # RMSE scatter + CSV only
 python analysis/run.py storms/helene_hfsa_cycles.yaml cycles  # cross-init comparison
-python analysis/run.py storms/helene_paper.yaml paper          # paper-style verification
 ```
 
 The two shipped examples:
@@ -393,96 +383,6 @@ MRMS-only scoring and marks that caveat in its output.
 
 ---
 
-## 10. Newman et al. paper-style verification
-
-The `paper` command implements the reusable analysis figure families from
-Newman et al. (2024), *Multi-season evaluation of Hurricane Analysis and
-Forecast System (HAFS) quantitative precipitation forecasts*:
-
-```bash
-python analysis/run.py storms/helene_paper.yaml paper
-```
-
-A paper-storm YAML describes one storm and one or more model run roots. The
-initialization sample is the intersection available across every model, so no
-model receives extra cases. Each forecast is evaluated on the same 0.1-degree
-grid and best-track-centered 600-km mask. The defaults reproduce the paper's
-6-h accumulation period and 0.1, 0.5, 1.0, 1.5, 2.5, 3.5, and 5.0-inch
-thresholds (stored in millimetres).
-
-```yaml
-storm_name: Hurricane Helene
-models:
-  HAFS-A: /work2/.../helene/HFSA
-  HAFS-B: /work2/.../helene/HFSB
-best_track: /work2/.../bal092024.dat
-domain: [15.0, 42.0, -100.0, -60.0]
-
-# Optional: otherwise use the intersection of cycle directories.
-inits: [2024092400, 2024092412]
-lead_hours: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72,
-             78, 84, 90, 96, 102, 108, 114, 120, 126]
-forecast_domain: parent       # paper default; "nest" is also supported
-composite_lead_hour: 12
-object_lead_hour: 12
-out_dir: analysis/output/helene_paper
-```
-
-The command writes:
-
-```text
-paper_track_shift_<case>.png           # Fig. 2 family: raw/shifted ETS + frequency bias
-paper_ets_lead_<case>.png               # Figs. 3/9 family: threshold ETS by lead
-paper_frequency_bias_lead_<case>.png    # Figs. 4/10 family: frequency bias by lead
-paper_storm_relative_<case>.png         # Figs. 5/11/13 family: mean RMW composite
-paper_radial_<case>.png                 # Figs. 6/12/14 family: 0.4-RMW boxplots
-paper_object_identification_<case>.png  # Fig. 7 family: forecast/obs rainfall objects
-paper_object_frequency_<case>.png       # Fig. 8 family: log intensity frequencies
-paper_samples_<case>.csv                # every init/lead/model/threshold contingency table
-paper_categorical_<case>.csv            # pooled scores and bootstrap 95% intervals
-paper_radial_<case>.csv                 # radial means and distribution percentiles
-paper_objects_<case>.csv                # object area, centroid, mean, and maximum rain
-```
-
-Track shifting translates each 6-h forecast by its forecast-track minus
-best-track displacement at the valid time. RMW is read from ATCF column 20 and
-converted from nautical miles to kilometres; `rmw_fallback_km` (50 km by
-default) is used and documented by the configuration when RMW is absent.
-
-The framework uses MRMS because it is the hourly land QPE source already
-available in this project. It is therefore a land-focused analogue of the
-paper's CCPA verification, not a claim that MRMS equals CCPA. Ocean verification
-with IMERG is not fabricated when IMERG is unavailable. Object identification
-uses a transparent smooth-threshold-connected-component method and reports its
-threshold, smoothing, and minimum area in the YAML. It reproduces the paper's
-object figure family but is not the MET MODE fuzzy-logic implementation.
-
-### Multiple storms
-
-List paper-storm YAMLs in a suite:
-
-```yaml
-label: HAFS multi-storm QPF verification
-storms:
-  - storms/helene_paper.yaml
-  - storms/ian_paper.yaml
-  - storms/idalia_paper.yaml
-out_dir: analysis/output/paper_multistorm
-```
-
-Then run:
-
-```bash
-python analysis/run.py storms/paper_multistorm.yaml paper
-```
-
-Every storm first receives all storm-centric products. Contingency counts are
-then pooled across storms by model, lead time, track-shift state, and threshold;
-ETS is recomputed from the pooled counts rather than averaged. Initializations
-are resampled as whole forecast events for the plotted 95% bootstrap intervals.
-
----
-
 ## Project layout
 
 ```
@@ -494,8 +394,6 @@ analysis/
   ets_full.py     # combined parent+nest ETS figure + CSV
   ets_score.py    # ETS contingency math + MRMS/swath helpers
   cycles.py       # cross-initialization comparison on a common valid window
-  paper_case.py    # per-storm and multi-storm paper YAML configuration
-  paper.py         # lead-time, track-shift, RMW, radial, and object products
   tests/          # standalone unit tests (run: python3 analysis/tests/<file>.py)
 storms/           # per-storm YAML case files
 analysis/output/  # generated figures (gitignored)

@@ -49,10 +49,6 @@ def read_config(path: Path) -> dict:
 
 
 def config_kind(cfg: dict) -> str:
-    if "storms" in cfg:
-        return "paper_suite"
-    if "models" in cfg and "best_track" in cfg:
-        return "paper"
     if "run_dir" in cfg:
         return "case"
     if "run_root" in cfg:
@@ -117,8 +113,8 @@ def generate(configs: list[Path], mode: str) -> list[tuple[Path, int]]:
     for path in configs:
         cfg = read_config(path)
         kind = config_kind(cfg)
-        command = {"case": "all", "cycles": "cycles", "compare": "compare",
-                   "paper": "paper", "paper_suite": "paper"}.get(kind)
+        command = {"case": "all", "cycles": "cycles",
+                   "compare": "compare"}.get(kind)
         if command is None or (mode == "missing" and not needs_generation(path, cfg)):
             continue
         print(f"\n--- Generating {path.stem} ({command}) ---", flush=True)
@@ -170,8 +166,7 @@ def build_manifest(configs: list[Path], output_root: Path) -> dict:
             for item in candidates:
                 files.append(_file_record(item, output_root))
                 assigned.add(item.resolve())
-        default_init = {"cycles": "all cycles", "paper": "multiple inits",
-                        "paper_suite": "multiple storms"}.get(kind, "comparison")
+        default_init = {"cycles": "all cycles"}.get(kind, "comparison")
         cases.append({
             "id": path.stem,
             "storm": str(cfg.get("storm_name", cfg.get("label", path.stem))),
