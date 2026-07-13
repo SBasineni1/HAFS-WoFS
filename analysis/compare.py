@@ -180,6 +180,95 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
     plt.close(fig)
 
 
+def csi_from_pod_sr(pod, sr):
+    """CSI reconstructed from POD and success ratio (SR = 1 - FAR).
+
+    From the contingency identity 1/CSI = 1/SR + 1/POD - 1. Vectorizes over
+    numpy meshes so it can shade the CSI contours on the performance diagram;
+    NaN/inf where POD or SR is 0 (the plot clips those at the axes)."""
+    pod = np.asarray(pod, dtype=float)
+    sr = np.asarray(sr, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 1.0 / (1.0 / sr + 1.0 / pod - 1.0)
+
+
+def performance_points(cat_rows, observation="MRMS", forecast="parent"):
+    """(success_ratio, pod, csi, bias) per threshold for one forecast/obs.
+
+    Success ratio = 1 - FAR. Pulls straight from the contingency rows compare
+    already computes, so the performance diagram adds no new scoring."""
+    pts = []
+    for r in cat_rows:
+        if r.get("observation") != observation or r.get("forecast") != forecast:
+            continue
+        pts.append({"model": r["model"], "threshold": r["threshold"],
+                    "success_ratio": 1.0 - r["far"], "pod": r["pod"],
+                    "csi": r["csi"], "bias": r["bias"]})
+    return pts
+
+
+_PERF_MARKERS = ["o", "s", "^", "D", "v", "P"]
+_PERF_BIAS_RAYS = (0.3, 0.5, 0.8, 1.0, 1.3, 1.6, 2.0)
+
+
+def plot_performance_diagram(cat_rows, label, out_path, observation="MRMS",
+                             forecast="parent"):
+    """Roebber performance diagram: POD vs success ratio, CSI shaded, frequency
+    bias as diagonal rays. One marker per model, annotated by threshold; the
+    perfect forecast sits in the top-right corner."""
+    pts = performance_points(cat_rows, observation, forecast)
+    fig, ax = plt.subplots(figsize=(7.5, 7))
+
+    axis = np.linspace(0.001, 1.0, 200)
+    sr_mesh, pod_mesh = np.meshgrid(axis, axis)
+    csi = csi_from_pod_sr(pod_mesh, sr_mesh)
+    shaded = ax.contourf(sr_mesh, pod_mesh, csi, levels=np.arange(0.1, 1.01, 0.1),
+                         cmap="Blues", alpha=0.55)
+    cbar = fig.colorbar(shaded, ax=ax, shrink=0.85)
+    cbar.set_label("Critical Success Index (CSI)")
+    lines = ax.contour(sr_mesh, pod_mesh, csi, levels=np.arange(0.1, 1.0, 0.1),
+                       colors="#4a4a4a", linewidths=0.5, alpha=0.6)
+    ax.clabel(lines, inline=True, fontsize=7, fmt="%.1f")
+
+    # Frequency-bias rays through the origin: POD = bias * SR. Each ray exits
+    # the unit square at the right edge (bias <= 1) or the top edge (bias > 1).
+    for b in _PERF_BIAS_RAYS:
+        if b <= 1.0:
+            ax.plot([0, 1], [0, b], color="gray", ls="--", lw=0.7, alpha=0.7)
+            ax.text(1.006, b, f"{b:g}", fontsize=7, color="gray", va="center")
+        else:
+            ax.plot([0, 1.0 / b], [0, 1.0], color="gray", ls="--", lw=0.7, alpha=0.7)
+            ax.text(1.0 / b, 1.008, f"{b:g}", fontsize=7, color="gray", ha="center")
+
+    models = sorted({p["model"] for p in pts})
+    colors = _model_colors(models)
+    markers = {m: _PERF_MARKERS[i % len(_PERF_MARKERS)]
+               for i, m in enumerate(models)}
+    for m in models:
+        mp = sorted((p for p in pts if p["model"] == m),
+                    key=lambda p: p["threshold"])
+        ax.plot([p["success_ratio"] for p in mp], [p["pod"] for p in mp],
+                color=colors[m], marker=markers[m], ms=8, lw=1.2,
+                markeredgecolor="white", zorder=5, label=m)
+        for p in mp:
+            ax.annotate(f"{p['threshold']:g}", (p["success_ratio"], p["pod"]),
+                        textcoords="offset points", xytext=(5, 4),
+                        fontsize=6, color=colors[m])
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_aspect("equal")
+    ax.set_xlabel("Success Ratio (1 - FAR)  →  fewer false alarms")
+    ax.set_ylabel("Probability of Detection (POD)  →  more hits")
+    ax.set_title(f"{label} — performance diagram ({forecast} vs {observation})\n"
+                 "filled = CSI, dashed rays = frequency bias, perfect = top-right",
+                 fontsize=11)
+    ax.legend(loc="lower left", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
 def _slug(label):
     return label.lower().replace(" ", "_")
 
@@ -234,6 +323,9 @@ def _plot_comparison(out_dir, slug, title, fss_plot_thresholds):
                      out_dir / f"compare_fss_{slug}.png",
                      observation="MRMS", forecast="parent",
                      plot_thresholds=tuple(float(t) for t in fss_plot_thresholds))
+    plot_performance_diagram(cat_rows, title,
+                             out_dir / f"compare_performance_{slug}.png",
+                             observation="MRMS", forecast="parent")
 
 
 def replot_from_csv(cfg):
@@ -331,15 +423,19 @@ def generate_comparison(cfg):
 
     cat_png = out_dir / f"compare_categorical_{slug}.png"
     fss_png = out_dir / f"compare_fss_{slug}.png"
+    perf_png = out_dir / f"compare_performance_{slug}.png"
     plot_categorical_compare(cat_rows, title, cat_png, observation="MRMS")
     plot_fss_compare(fss_rows, title, fss_png, observation="MRMS",
                      forecast="parent",
                      plot_thresholds=tuple(cfg["fss_plot_thresholds"]))
+    plot_performance_diagram(cat_rows, title, perf_png, observation="MRMS",
+                             forecast="parent")
 
     print(f"\nSaved: {cat_csv}")
     print(f"Saved: {fss_csv}")
     print(f"Saved: {cat_png}")
     print(f"Saved: {fss_png}")
+    print(f"Saved: {perf_png}")
     print("\nETS (parent vs MRMS) at 25 / 50 mm:")
     for mdl in sorted({r["model"] for r in cat_rows}):
         e25 = next((r["ets"] for r in cat_rows if r["model"] == mdl

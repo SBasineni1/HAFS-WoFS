@@ -118,6 +118,7 @@ def test_plot_comparison_writes_init_tagged_pngs():
     _plot_comparison(d, slug, "Hurricane Helene (init 2024-09-24 00Z)", [25, 50])
     assert (d / f"compare_categorical_{slug}.png").stat().st_size > 0
     assert (d / f"compare_fss_{slug}.png").stat().st_size > 0
+    assert (d / f"compare_performance_{slug}.png").stat().st_size > 0
 
 
 def test_score_matrix_common_n_across_models_when_footprints_differ():
@@ -175,6 +176,55 @@ def test_check_same_init_raises_when_differ():
         assert False, "expected ValueError"
     except ValueError as e:
         assert "2024092400" in str(e) and "2024092412" in str(e)
+
+
+def test_csi_from_pod_sr_known_values():
+    """CSI reconstructed from POD and success ratio: 1/CSI = 1/SR + 1/POD - 1."""
+    from compare import csi_from_pod_sr
+    assert abs(csi_from_pod_sr(1.0, 1.0) - 1.0) < 1e-12       # perfect
+    assert abs(csi_from_pod_sr(0.5, 0.5) - 1.0 / 3.0) < 1e-12  # 1/(2+2-1)
+
+
+def test_csi_from_pod_sr_vectorizes():
+    """The contour grid needs CSI over POD/SR meshes, elementwise."""
+    from compare import csi_from_pod_sr
+    pod = np.array([[1.0, 0.5]])
+    sr = np.array([[1.0, 0.5]])
+    out = csi_from_pod_sr(pod, sr)
+    assert out.shape == (1, 2)
+    assert abs(out[0, 0] - 1.0) < 1e-12
+    assert abs(out[0, 1] - 1.0 / 3.0) < 1e-12
+
+
+def test_performance_points_extracts_sr_pod_filtered():
+    """Success ratio = 1 - FAR; only the requested forecast/observation kept."""
+    from compare import performance_points
+    rows = [
+        {"model": "HAFS-A", "forecast": "parent", "observation": "MRMS",
+         "threshold": 25.0, "pod": 0.8, "far": 0.4, "csi": 0.5, "bias": 1.2},
+        {"model": "HAFS-A", "forecast": "nest", "observation": "MRMS",
+         "threshold": 25.0, "pod": 0.1, "far": 0.9, "csi": 0.05, "bias": 0.3},
+        {"model": "HAFS-B", "forecast": "parent", "observation": "Stage IV",
+         "threshold": 25.0, "pod": 0.7, "far": 0.5, "csi": 0.4, "bias": 1.0},
+        {"model": "HAFS-B", "forecast": "parent", "observation": "MRMS",
+         "threshold": 50.0, "pod": 0.6, "far": 0.5, "csi": 0.4, "bias": 0.9},
+    ]
+    pts = performance_points(rows, observation="MRMS", forecast="parent")
+    assert len(pts) == 2  # nest row and Stage IV row filtered out
+    a = next(p for p in pts if p["model"] == "HAFS-A")
+    assert abs(a["success_ratio"] - 0.6) < 1e-12
+    assert abs(a["pod"] - 0.8) < 1e-12
+    assert a["threshold"] == 25.0
+
+
+def test_plot_performance_diagram_writes_png():
+    from compare import plot_performance_diagram
+    cat, _ = _toy_rows()
+    d = Path(tempfile.mkdtemp())
+    png = d / "perf.png"
+    plot_performance_diagram(cat, "Test", png, observation="MRMS",
+                             forecast="parent")
+    assert png.exists() and png.stat().st_size > 0
 
 
 def _run_all():
