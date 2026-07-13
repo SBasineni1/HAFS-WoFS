@@ -5,6 +5,8 @@ Loaded via run.py:  python analysis/run.py storms/<name>_compare.yaml compare
 
 import sys
 import csv
+import warnings
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,12 +16,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from scipy.interpolate import RegularGridInterpolator
 import yaml
 from ets_full import score_pair
 from ets_score import contingency_scores
 from skill_metrics import fractions_skill_score
-from hafs_case import from_yaml
-from best_track import parse_bdeck
+from hafs_case import from_yaml, position_on_track
+from best_track import parse_bdeck, parse_bdeck_fixes
 from skill_metrics import swath_from_track
 from hafs_common import discover_files, hafs_event_total
 from ets_full import hafs_parent_total, stage4_on_fixed
@@ -297,6 +302,18 @@ _STORM_TOTAL_LEVELS = [1, 5, 10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500]
 _STORM_TOTAL_THRESHOLDS_MM = (25.4, 76.2, 127.0, 254.0)
 
 
+def _add_us_geography(ax):
+    """Overlay US coastline, state, and national borders on a cartopy axis.
+    Best-effort: a no-op if the Natural Earth data is unavailable (e.g. an
+    offline test host), so the map still renders."""
+    try:
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+        ax.add_feature(cfeature.STATES, linewidth=0.3, edgecolor="gray")
+        ax.add_feature(cfeature.BORDERS, linewidth=0.4, edgecolor="gray")
+    except Exception:
+        pass
+
+
 def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
                      out_path, thresholds_mm=_STORM_TOTAL_THRESHOLDS_MM):
     """Whole-storm accumulation maps (obs first, then each model) over the
@@ -309,18 +326,26 @@ def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
     cmap = plt.get_cmap("turbo")
     norm = BoundaryNorm(_STORM_TOTAL_LEVELS, cmap.N, extend="max")
 
+    proj = ccrs.PlateCarree()
+    lon_min, lon_max = float(np.min(grid_lon)), float(np.max(grid_lon))
+    lat_min, lat_max = float(np.min(grid_lat)), float(np.max(grid_lat))
     map_axes, mesh, stats = [], None, {}
     for i, (name, field) in enumerate(sources):
-        ax = fig.add_subplot(gs[0, i])
+        ax = fig.add_subplot(gs[0, i], projection=proj)
+        ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
+        _add_us_geography(ax)
         masked = np.where(swath & np.isfinite(field), field, np.nan)
         mesh = ax.pcolormesh(grid_lon, grid_lat, masked, cmap=cmap, norm=norm,
-                             shading="auto")
+                             shading="auto", transform=proj)
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, color="gray",
+                          alpha=0.4, linestyle=":")
+        gl.top_labels = False
+        gl.right_labels = False
+        if i > 0:
+            gl.left_labels = False
         st = accumulation_stats(field, swath, grid_lat, grid_res, thresholds_mm)
         stats[name] = st
         ax.set_title(f"{name}\npeak {st['max_mm']:.0f} mm")
-        ax.set_xlabel("Longitude")
-        if i == 0:
-            ax.set_ylabel("Latitude")
         map_axes.append(ax)
     fig.colorbar(mesh, ax=map_axes, shrink=0.85, extend="max",
                  label="Storm-total precipitation (mm)")
@@ -342,6 +367,194 @@ def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
 
     fig.suptitle(f"{label} — storm-total precipitation and exceedance area "
                  "(vs MRMS)", fontsize=13)
+    fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def _interp_center_rmw(fixes, valid_time, fallback_km):
+    """(lat, lon, rmw_km, used_fallback) interpolated to valid_time from
+    best-track fixes [(t, lat, lon, rmw_or_None), ...]. Position comes from the
+    track; RMW is linearly interpolated among fixes that report one, clamped at
+    the ends, and replaced by fallback_km (flagged) when none do."""
+    basic = [(t, lat, lon) for t, lat, lon, _ in fixes]
+    lat, lon = position_on_track(basic, valid_time)
+    have = [(t, rmw) for t, _, _, rmw in fixes if rmw is not None]
+    if not have:
+        return lat, lon, float(fallback_km), True
+    if valid_time <= have[0][0]:
+        return lat, lon, have[0][1], False
+    if valid_time >= have[-1][0]:
+        return lat, lon, have[-1][1], False
+    for (t0, r0), (t1, r1) in zip(have, have[1:]):
+        if t0 <= valid_time <= t1:
+            frac = (valid_time - t0).total_seconds() / (t1 - t0).total_seconds()
+            return lat, lon, r0 + frac * (r1 - r0), False
+    return lat, lon, have[-1][1], False
+
+
+def storm_relative_field(field, grid_lat, grid_lon, center, rmw_km,
+                         radius_rmw=6.0, res_rmw=0.2):
+    """Resample a regular lat/lon field onto an RMW-normalized Cartesian grid
+    centered on the storm. Returns (x, y, values) with x/y in units of RMW and
+    values NaN beyond radius_rmw, so composites tie rainfall structure to storm
+    size rather than absolute geography (Newman et al. 2024, TC-RMW)."""
+    axis = np.arange(-radius_rmw, radius_rmw + res_rmw / 2, res_rmw)
+    x, y = np.meshgrid(axis, axis)
+    clat, clon = center
+    qlat = clat + y * rmw_km / 111.0
+    coslat = max(np.cos(np.radians(clat)), 0.1)
+    qlon = clon + x * rmw_km / (111.0 * coslat)
+    lat_axis = np.asarray(grid_lat[:, 0], dtype=float)
+    lon_axis = np.asarray(grid_lon[0, :], dtype=float)
+    values = np.asarray(field, dtype=float)
+    if lat_axis[0] > lat_axis[-1]:               # interpolator needs ascending axes
+        lat_axis, values = lat_axis[::-1], values[::-1, :]
+    if lon_axis[0] > lon_axis[-1]:
+        lon_axis, values = lon_axis[::-1], values[:, ::-1]
+    interp = RegularGridInterpolator((lat_axis, lon_axis), values,
+                                     bounds_error=False, fill_value=np.nan)
+    out = interp(np.column_stack([qlat.ravel(), qlon.ravel()])).reshape(x.shape)
+    out[np.hypot(x, y) > radius_rmw] = np.nan
+    return x, y, out
+
+
+def radial_profile(stack, radius_rmw=6.0, res_rmw=0.2, bin_rmw=0.4):
+    """Percentile distribution per radial bin over a stack of RMW-normalized
+    fields. Returns one dict per bin with p05/p25/median/p75/p95 and count."""
+    axis = np.arange(-radius_rmw, radius_rmw + res_rmw / 2, res_rmw)
+    x, y = np.meshgrid(axis, axis)
+    r = np.hypot(x, y)
+    edges = np.arange(0, radius_rmw + bin_rmw, bin_rmw)
+    arr = np.stack(stack)
+    rows = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        vals = arr[:, (r >= lo) & (r < hi)].ravel()
+        vals = vals[np.isfinite(vals)]
+        if not vals.size:
+            continue
+        p05, p25, p50, p75, p95 = np.percentile(vals, [5, 25, 50, 75, 95])
+        rows.append({"r_lo": float(lo), "r_hi": float(hi),
+                     "r_mid": float((lo + hi) / 2), "n": int(vals.size),
+                     "p05": p05, "p25": p25, "median": p50,
+                     "p75": p75, "p95": p95})
+    return rows
+
+
+def storm_relative_composite(cases, best_track_path, grid_lat, grid_lon,
+                             max_fhour, accumulation_hours=6,
+                             rmw_fallback_km=50.0, radius_rmw=6.0, res_rmw=0.2):
+    """Composite RMW-normalized 6-h rain over every lead window for MRMS and
+    each model. Each model field is centered on its OWN forecast track (so
+    track error is removed from the structure) while every source is normalized
+    by the common best-track RMW. Windows that lack a parent file or an MRMS
+    hour are skipped with a printed reason. Returns
+    (composites, radial_by_source, used_fallback_rmw)."""
+    from cycles import parent_window_total
+    from ets_score import build_mrms_total_window
+
+    fixes = parse_bdeck_fixes(best_track_path)
+    init_dt = cases[0].init_dt
+    mrms_cache_dir = cases[0].mrms_cache_dir
+    order = ["MRMS"] + [c.model_label for c in cases]
+    stacks = {name: [] for name in order}
+    used_fallback = False
+
+    for lead in range(accumulation_hours, max_fhour + 1, accumulation_hours):
+        f1, f2 = lead - accumulation_hours, lead
+        valid_start = init_dt + timedelta(hours=f1)
+        valid_end = init_dt + timedelta(hours=f2)
+        blat, blon, rmw, fb = _interp_center_rmw(fixes, valid_end, rmw_fallback_km)
+        used_fallback = used_fallback or fb
+
+        try:
+            obs = build_mrms_total_window(valid_start, valid_end, mrms_cache_dir,
+                                          grid_lat, grid_lon)
+            _, _, sr = storm_relative_field(obs, grid_lat, grid_lon,
+                                            (blat, blon), rmw, radius_rmw, res_rmw)
+            stacks["MRMS"].append(sr)
+        except RuntimeError as exc:
+            print(f"  storm-relative skip MRMS F{lead:03d}: {exc}")
+
+        for case in cases:
+            try:
+                fcst = parent_window_total(case, f1, f2, grid_lat, grid_lon)
+            except RuntimeError as exc:
+                print(f"  storm-relative skip {case.model_label} F{lead:03d}: {exc}")
+                continue
+            mlat, mlon = position_on_track(case.track, valid_end)
+            _, _, sr = storm_relative_field(fcst, grid_lat, grid_lon,
+                                            (mlat, mlon), rmw, radius_rmw, res_rmw)
+            stacks[case.model_label].append(sr)
+
+    composites, radial_by_source = [], {}
+    for name in order:
+        if not stacks[name]:
+            continue
+        # Pixels beyond the RMW radius are NaN in every window, so nanmean warns
+        # about all-NaN slices there; that is expected and the result stays NaN.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mean_field = np.nanmean(np.stack(stacks[name]), axis=0)
+        composites.append((name, mean_field))
+        radial_by_source[name] = radial_profile(stacks[name], radius_rmw, res_rmw)
+    return composites, radial_by_source, used_fallback
+
+
+_STORM_REL_LEVELS = [0.5, 1, 2, 4, 8, 15, 25, 40, 60, 90]
+
+
+def plot_storm_relative(composites, radial_by_source, label, out_path,
+                        radius_rmw=6.0, res_rmw=0.2):
+    """RMW-normalized mean-rain composites (top, obs first) with radial median
+    +/- IQR distributions beneath. ``composites`` is an ordered list of
+    (name, mean_field); ``radial_by_source`` maps name -> radial_profile rows."""
+    sources = [name for name, _ in composites]
+    n = len(sources)
+    fig = plt.figure(figsize=(4.8 * n, 9))
+    gs = fig.add_gridspec(2, n, height_ratios=[1.25, 1.0], hspace=0.28)
+    axis = np.arange(-radius_rmw, radius_rmw + res_rmw / 2, res_rmw)
+    x, y = np.meshgrid(axis, axis)
+    cmap = plt.get_cmap("turbo")
+    norm = BoundaryNorm(_STORM_REL_LEVELS, cmap.N, extend="max")
+
+    map_axes, mesh = [], None
+    for i, (name, field) in enumerate(composites):
+        ax = fig.add_subplot(gs[0, i])
+        mesh = ax.pcolormesh(x, y, field, cmap=cmap, norm=norm, shading="auto")
+        for ring in range(1, int(radius_rmw) + 1):
+            ax.add_patch(plt.Circle((0, 0), ring, fill=False, color="#555",
+                                    lw=0.6, alpha=0.7))
+        ax.axhline(0, color="#777", lw=0.4)
+        ax.axvline(0, color="#777", lw=0.4)
+        ax.set_aspect("equal")
+        ax.set_title(name)
+        ax.set_xlabel("x / RMW")
+        if i == 0:
+            ax.set_ylabel("y / RMW")
+        map_axes.append(ax)
+    fig.colorbar(mesh, ax=map_axes, shrink=0.85, extend="max",
+                 label="Mean 6-h precipitation (mm)")
+
+    model_names = [name for name, _ in composites[1:]]
+    colors = _model_colors(model_names)
+    axr = fig.add_subplot(gs[1, :])
+    for name in sources:
+        rows = sorted(radial_by_source.get(name, []), key=lambda r: r["r_mid"])
+        if not rows:
+            continue
+        rmid = [r["r_mid"] for r in rows]
+        color = "0.4" if name == sources[0] else colors.get(name)
+        axr.plot(rmid, [r["median"] for r in rows], color=color, lw=2, label=name)
+        axr.fill_between(rmid, [r["p25"] for r in rows], [r["p75"] for r in rows],
+                         color=color, alpha=0.18)
+    axr.set_xlim(0, radius_rmw)
+    axr.set_xlabel("Distance from center (RMW)")
+    axr.set_ylabel("6-h precipitation (mm)")
+    axr.grid(True, ls=":", alpha=0.4)
+    axr.legend(fontsize=9)
+    axr.set_title("Radial distribution — median with 25–75% band")
+
+    fig.suptitle(f"{label} — storm-relative composite (vs MRMS)", fontsize=13)
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -516,12 +729,29 @@ def generate_comparison(cfg):
     plot_storm_total(storm_total_sources, swath, grid_lat, grid_lon, a.grid_res,
                      title, storm_total_png)
 
+    # Storm-relative RMW composite: pool 6-h windows over all lead times, each
+    # model centered on its own track, all normalized by the best-track RMW.
+    print("Storm-relative RMW composite (per-lead windows) ...")
+    storm_rel_png = out_dir / f"compare_storm_relative_{slug}.png"
+    composites, radial_by_source, used_fallback = storm_relative_composite(
+        cases, cfg["best_track"], grid_lat, grid_lon, max_fhour)
+    if used_fallback:
+        print(f"  note: best track had no RMW column; used "
+              f"{50.0:.0f} km fallback (distances are ~km/50, not true RMW)")
+    if composites:
+        plot_storm_relative(composites, radial_by_source, title, storm_rel_png)
+    else:
+        storm_rel_png = None
+        print("  storm-relative: no usable windows; skipped")
+
     print(f"\nSaved: {cat_csv}")
     print(f"Saved: {fss_csv}")
     print(f"Saved: {cat_png}")
     print(f"Saved: {fss_png}")
     print(f"Saved: {perf_png}")
     print(f"Saved: {storm_total_png}")
+    if storm_rel_png is not None:
+        print(f"Saved: {storm_rel_png}")
     print("\nETS (parent vs MRMS) at 25 / 50 mm:")
     for mdl in sorted({r["model"] for r in cat_rows}):
         e25 = next((r["ets"] for r in cat_rows if r["model"] == mdl

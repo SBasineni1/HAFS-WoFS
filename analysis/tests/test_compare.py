@@ -282,6 +282,111 @@ def test_plot_storm_total_writes_png():
     assert png.exists() and png.stat().st_size > 0
 
 
+def test_interp_center_rmw_interpolates_and_falls_back():
+    """Center + RMW linearly interpolated between best-track fixes; the fallback
+    RMW is used (and flagged) only when no fix carries an RMW."""
+    from compare import _interp_center_rmw
+    fixes = [(datetime(2024, 9, 26, 0), 20.0, -85.0, 40.0),
+             (datetime(2024, 9, 26, 12), 22.0, -85.0, 60.0)]
+    lat, lon, rmw, fb = _interp_center_rmw(fixes, datetime(2024, 9, 26, 6), 50.0)
+    assert fb is False
+    assert abs(lat - 21.0) < 1e-6          # midpoint latitude
+    assert abs(rmw - 50.0) < 1e-9          # midpoint of 40 and 60 km
+
+    no_rmw = [(datetime(2024, 9, 26, 0), 20.0, -85.0, None),
+              (datetime(2024, 9, 26, 12), 22.0, -85.0, None)]
+    lat, lon, rmw, fb = _interp_center_rmw(no_rmw, datetime(2024, 9, 26, 6), 50.0)
+    assert fb is True and rmw == 50.0
+
+
+def test_storm_relative_field_uniform_inside_nan_outside():
+    """A uniform field maps to that constant within radius, NaN beyond it."""
+    from compare import storm_relative_field
+    lat1 = np.linspace(20, 40, 61)
+    lon1 = np.linspace(-100, -70, 91)
+    grid_lon, grid_lat = np.meshgrid(lon1, lat1)
+    field = np.full(grid_lat.shape, 5.0)
+    x, y, out = storm_relative_field(field, grid_lat, grid_lon, (30.0, -85.0),
+                                     rmw_km=50.0, radius_rmw=4.0, res_rmw=0.5)
+    r = np.hypot(x, y)
+    assert np.allclose(out[r <= 1.0], 5.0)          # interior preserved
+    assert np.all(np.isnan(out[r > 4.0 + 1e-9]))    # masked past the radius
+
+
+def test_radial_profile_uniform_median():
+    """Radial bins of a uniform disk all report that constant as the median."""
+    from compare import radial_profile
+    axis = np.arange(-6, 6 + 0.1, 0.2)
+    x, y = np.meshgrid(axis, axis)
+    r = np.hypot(x, y)
+    field = np.where(r <= 6, 5.0, np.nan)
+    prof = radial_profile([field], radius_rmw=6.0, res_rmw=0.2, bin_rmw=0.4)
+    assert len(prof) > 0
+    assert all(abs(b["median"] - 5.0) < 1e-9 for b in prof)
+    assert prof[0]["r_lo"] == 0.0            # bins start at the center
+
+
+def test_storm_relative_composite_pools_windows():
+    """The compositing loop pools every lead window per source and normalizes
+    each model on its own track. Patches the GRIB/MRMS loaders so the loop's
+    bookkeeping is exercised without Hercules data."""
+    import compare
+    import cycles
+    import ets_score
+    lat1 = np.linspace(24, 38, 71)
+    lon1 = np.linspace(-92, -76, 81)
+    grid_lon, grid_lat = np.meshgrid(lon1, lat1)
+    track = [(datetime(2024, 9, 26, 0), 31.0, -84.0),
+             (datetime(2024, 9, 27, 0), 32.0, -83.0)]
+    fixes = [(datetime(2024, 9, 26, 0), 31.0, -84.0, 40.0),
+             (datetime(2024, 9, 27, 0), 32.0, -83.0, 45.0)]
+
+    def fake_parent(case, f1, f2, gla, glo):
+        return np.full(gla.shape, 10.0)
+
+    def fake_mrms(vs, ve, cache, gla, glo):
+        return np.full(gla.shape, 8.0)
+
+    saved = (cycles.parent_window_total, ets_score.build_mrms_total_window,
+             compare.parse_bdeck_fixes)
+    cycles.parent_window_total = fake_parent
+    ets_score.build_mrms_total_window = fake_mrms
+    compare.parse_bdeck_fixes = lambda path: fixes
+    try:
+        cases = [types.SimpleNamespace(init_dt=datetime(2024, 9, 26, 0),
+                                       mrms_cache_dir=Path("/tmp"),
+                                       model_label=name, track=track)
+                 for name in ("HAFS-A", "HAFS-B")]
+        comps, radial, fb = compare.storm_relative_composite(
+            cases, "ignored", grid_lat, grid_lon, max_fhour=12,
+            accumulation_hours=6)
+    finally:
+        (cycles.parent_window_total, ets_score.build_mrms_total_window,
+         compare.parse_bdeck_fixes) = saved
+
+    assert [name for name, _ in comps] == ["MRMS", "HAFS-A", "HAFS-B"]
+    assert fb is False                       # fixes carried an RMW
+    # Uniform inputs -> composite radial medians equal the input constants.
+    assert all(abs(b["median"] - 8.0) < 1e-9 for b in radial["MRMS"])
+    assert all(abs(b["median"] - 10.0) < 1e-9 for b in radial["HAFS-A"])
+
+
+def test_plot_storm_relative_writes_png():
+    from compare import plot_storm_relative, radial_profile
+    axis = np.arange(-6, 6 + 0.1, 0.2)
+    x, y = np.meshgrid(axis, axis)
+    r = np.hypot(x, y)
+    obs = np.where(r <= 6, 20.0 * np.exp(-r), np.nan)
+    a = np.where(r <= 6, 15.0 * np.exp(-r / 1.3), np.nan)
+    b = np.where(r <= 6, 18.0 * np.exp(-r / 1.1), np.nan)
+    composites = [("MRMS", obs), ("HAFS-A", a), ("HAFS-B", b)]
+    radial = {name: radial_profile([f]) for name, f in composites}
+    d = Path(tempfile.mkdtemp())
+    png = d / "storm_rel.png"
+    plot_storm_relative(composites, radial, "Test", png)
+    assert png.exists() and png.stat().st_size > 0
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
