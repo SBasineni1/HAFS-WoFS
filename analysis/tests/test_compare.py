@@ -227,6 +227,61 @@ def test_plot_performance_diagram_writes_png():
     assert png.exists() and png.stat().st_size > 0
 
 
+def test_cell_area_km2_scales_with_latitude():
+    """Grid-cell area shrinks with cos(latitude); N-S extent is constant."""
+    from compare import cell_area_km2
+    lat = np.array([[0.0, 60.0]])
+    a = cell_area_km2(lat, 0.1)
+    assert abs(a[0, 0] - (0.1 * 111.0) ** 2) < 1e-6
+    assert abs(a[0, 1] - (0.1 * 111.0) ** 2 * np.cos(np.radians(60.0))) < 1e-6
+
+
+def test_accumulation_stats_area_and_max():
+    """Max over the swath, plus km^2 of cells at/above each threshold."""
+    from compare import accumulation_stats
+    lat = np.zeros((3, 3))            # cos(0)=1 -> every cell (0.1*111)^2 km^2
+    field = np.zeros((3, 3))
+    field[0, 0] = 30.0
+    field[0, 1] = 30.0
+    field[1, 1] = 10.0
+    swath = np.ones((3, 3), dtype=bool)
+    st = accumulation_stats(field, swath, lat, 0.1, [25.0, 5.0])
+    cell = (0.1 * 111.0) ** 2
+    assert abs(st["max_mm"] - 30.0) < 1e-9
+    assert abs(st["area_km2"][25.0] - 2 * cell) < 1e-6   # two cells >= 25
+    assert abs(st["area_km2"][5.0] - 3 * cell) < 1e-6    # three cells >= 5
+
+
+def test_accumulation_stats_respects_swath():
+    """Points outside the swath are excluded from max and area."""
+    from compare import accumulation_stats
+    lat = np.zeros((3, 3))
+    field = np.zeros((3, 3))
+    field[0, 0] = 99.0                # this cell is outside the swath
+    field[2, 2] = 20.0
+    swath = np.ones((3, 3), dtype=bool)
+    swath[0, 0] = False
+    st = accumulation_stats(field, swath, lat, 0.1, [5.0])
+    cell = (0.1 * 111.0) ** 2
+    assert abs(st["max_mm"] - 20.0) < 1e-9                # 99 excluded
+    assert abs(st["area_km2"][5.0] - 1 * cell) < 1e-6     # only the (2,2) cell
+
+
+def test_plot_storm_total_writes_png():
+    from compare import plot_storm_total
+    lat1 = np.linspace(20, 30, 12)
+    lon1 = np.linspace(-90, -80, 12)
+    grid_lon, grid_lat = np.meshgrid(lon1, lat1)
+    g = np.zeros((12, 12))
+    g[4:8, 4:8] = 120.0
+    swath = np.ones((12, 12), dtype=bool)
+    sources = [("MRMS", g.copy()), ("HAFS-A", g * 0.8), ("HAFS-B", g * 1.1)]
+    d = Path(tempfile.mkdtemp())
+    png = d / "storm_total.png"
+    plot_storm_total(sources, swath, grid_lat, grid_lon, 0.1, "Test", png)
+    assert png.exists() and png.stat().st_size > 0
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

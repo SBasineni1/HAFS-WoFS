@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm
 import yaml
 from ets_full import score_pair
 from ets_score import contingency_scores
@@ -269,6 +270,82 @@ def plot_performance_diagram(cat_rows, label, out_path, observation="MRMS",
     plt.close(fig)
 
 
+def cell_area_km2(grid_lat, grid_res):
+    """Per-cell area (km^2) on the regular lat/lon mesh. N-S extent is a
+    constant grid_res*111 km; E-W shrinks with cos(latitude)."""
+    ns_km = grid_res * 111.0
+    ew_km = ns_km * np.cos(np.radians(np.asarray(grid_lat, dtype=float)))
+    return ns_km * ew_km
+
+
+def accumulation_stats(field, swath, grid_lat, grid_res, thresholds_mm):
+    """Storm-total summary over the swath: peak accumulation and the land/area
+    (km^2) receiving at least each threshold. Points outside the swath or with
+    non-finite values are ignored."""
+    field = np.asarray(field, dtype=float)
+    valid = swath & np.isfinite(field)
+    area = cell_area_km2(grid_lat, grid_res)
+    max_mm = float(field[valid].max()) if valid.any() else float("nan")
+    area_km2 = {float(t): float(area[valid & (field >= t)].sum())
+                for t in thresholds_mm}
+    return {"max_mm": max_mm, "area_km2": area_km2}
+
+
+# Storm totals reach hundreds of mm, so use a wider ladder than the 6-h QPF one.
+_STORM_TOTAL_LEVELS = [1, 5, 10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500]
+# Default exceedance thresholds: 1, 3, 5, 10 inches in mm.
+_STORM_TOTAL_THRESHOLDS_MM = (25.4, 76.2, 127.0, 254.0)
+
+
+def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
+                     out_path, thresholds_mm=_STORM_TOTAL_THRESHOLDS_MM):
+    """Whole-storm accumulation maps (obs first, then each model) over the
+    top row, with an area-exceeding-threshold bar chart beneath. ``sources``
+    is an ordered list of (name, total_field). Annotates each map with its
+    peak total; the bars quantify the flood-relevant footprint per source."""
+    n = len(sources)
+    fig = plt.figure(figsize=(5 * n, 8.5))
+    gs = fig.add_gridspec(2, n, height_ratios=[2.1, 1.0], hspace=0.35)
+    cmap = plt.get_cmap("turbo")
+    norm = BoundaryNorm(_STORM_TOTAL_LEVELS, cmap.N, extend="max")
+
+    map_axes, mesh, stats = [], None, {}
+    for i, (name, field) in enumerate(sources):
+        ax = fig.add_subplot(gs[0, i])
+        masked = np.where(swath & np.isfinite(field), field, np.nan)
+        mesh = ax.pcolormesh(grid_lon, grid_lat, masked, cmap=cmap, norm=norm,
+                             shading="auto")
+        st = accumulation_stats(field, swath, grid_lat, grid_res, thresholds_mm)
+        stats[name] = st
+        ax.set_title(f"{name}\npeak {st['max_mm']:.0f} mm")
+        ax.set_xlabel("Longitude")
+        if i == 0:
+            ax.set_ylabel("Latitude")
+        map_axes.append(ax)
+    fig.colorbar(mesh, ax=map_axes, shrink=0.85, extend="max",
+                 label="Storm-total precipitation (mm)")
+
+    axb = fig.add_subplot(gs[1, :])
+    colors = _model_colors([n for n, _ in sources[1:]])
+    x = np.arange(len(thresholds_mm))
+    width = 0.8 / n
+    for j, (name, _) in enumerate(sources):
+        areas = [stats[name]["area_km2"][float(t)] for t in thresholds_mm]
+        color = "0.4" if j == 0 else colors.get(name)
+        axb.bar(x + j * width, areas, width, label=name, color=color)
+    axb.set_xticks(x + width * (n - 1) / 2)
+    axb.set_xticklabels([f"{t / 25.4:g} in" for t in thresholds_mm])
+    axb.set_xlabel("Storm-total accumulation threshold")
+    axb.set_ylabel("Area exceeding (km²)")
+    axb.grid(True, axis="y", ls=":", alpha=0.4)
+    axb.legend(fontsize=9)
+
+    fig.suptitle(f"{label} — storm-total precipitation and exceedance area "
+                 "(vs MRMS)", fontsize=13)
+    fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
 def _slug(label):
     return label.lower().replace(" ", "_")
 
@@ -424,18 +501,27 @@ def generate_comparison(cfg):
     cat_png = out_dir / f"compare_categorical_{slug}.png"
     fss_png = out_dir / f"compare_fss_{slug}.png"
     perf_png = out_dir / f"compare_performance_{slug}.png"
+    storm_total_png = out_dir / f"compare_storm_total_{slug}.png"
     plot_categorical_compare(cat_rows, title, cat_png, observation="MRMS")
     plot_fss_compare(fss_rows, title, fss_png, observation="MRMS",
                      forecast="parent",
                      plot_thresholds=tuple(cfg["fss_plot_thresholds"]))
     plot_performance_diagram(cat_rows, title, perf_png, observation="MRMS",
                              forecast="parent")
+    # Storm-total maps need the 2-D total fields, so they are drawn here (not in
+    # replot, which only has the CSVs). MRMS is identical across models (shared
+    # window), so take it from the first.
+    storm_total_sources = [("MRMS", models[0]["obs"]["MRMS"])] + \
+        [(m["name"], m["forecasts"]["parent"]) for m in models]
+    plot_storm_total(storm_total_sources, swath, grid_lat, grid_lon, a.grid_res,
+                     title, storm_total_png)
 
     print(f"\nSaved: {cat_csv}")
     print(f"Saved: {fss_csv}")
     print(f"Saved: {cat_png}")
     print(f"Saved: {fss_png}")
     print(f"Saved: {perf_png}")
+    print(f"Saved: {storm_total_png}")
     print("\nETS (parent vs MRMS) at 25 / 50 mm:")
     for mdl in sorted({r["model"] for r in cat_rows}):
         e25 = next((r["ets"] for r in cat_rows if r["model"] == mdl
