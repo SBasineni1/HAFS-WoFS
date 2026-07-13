@@ -48,6 +48,12 @@ python analysis/run.py storms/helene_hfsa_2024092412.yaml all
 # common valid window — metrics-vs-init figure + QPF map small-multiples
 python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
 
+# Browse every storm/init and its QPF, ETS, and RMSE figures in one place
+python analysis/viewer.py
+
+# Generate any missing products first, then open the same live viewer
+python analysis/viewer.py --generate missing
+
 # Pull the figures to your laptop (run this FROM the laptop — §3)
 scp -r <user>@<cluster>:/path/to/HAFS-WoFS/analysis/output/<case> ~/Downloads/
 ```
@@ -131,6 +137,27 @@ The two shipped examples:
 python analysis/run.py storms/helene_hfsa.yaml all
 python analysis/run.py storms/helene_hfsb.yaml all
 ```
+
+### One-file analysis viewer
+
+Run `python analysis/viewer.py` from the repository root and open the printed
+address (normally `http://127.0.0.1:8765`). The storm, model, and initialization
+selectors put the side-by-side QPF map, ETS curve, RMSE scatter, and their CSVs
+in one gallery. The page rescans `analysis/output/` every five seconds, so new
+graphics appear automatically while it remains open.
+
+To make plots and view them with one command:
+
+```bash
+python analysis/viewer.py --generate missing              # all storm YAMLs
+python analysis/viewer.py --generate always --case helene_hfsa
+python analysis/viewer.py --generate missing --no-serve   # batch/HPC only
+```
+
+`missing` leaves complete cases alone; `always` recomputes the selected cases.
+The viewer recognizes normal per-init, cycles, and HFSA-vs-HFSB comparison
+YAMLs and sends each to the existing `analysis/run.py` workflow. A failed case
+does not hide plots that were already generated for the other cases.
 
 Each run prints a one-line case summary (storm, model, init, domain, track
 file) so you can sanity-check the auto-detection before it grinds through the

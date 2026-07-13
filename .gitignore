@@ -46,6 +46,7 @@ CLAUDE.md
 # Logs and temp outputs
 *.log
 *.tmp
+analysis/output/viewer-manifest.json
 
 # Superpowers workflow scratch (specs, plans, ledgers) - local only
 .superpowers/
