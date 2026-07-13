@@ -117,8 +117,26 @@ def parent_window_total(case, f1, f2, grid_lat, grid_lon):
     Interpolation noise can leave tiny negatives; those are floored at 0
     (NaN outside the parent hull is preserved). Raises RuntimeError when a
     needed parent file or record is missing.
+
+    Sweeping consecutive windows (…f6, f6->f12, f12->f18…) asks for each
+    cumulative field twice: once as a window's f2, then as the next window's
+    f1. The regridded cumulative field is memoized on the case (keyed by
+    fhour + grid shape) so that repeated decode+regrid work is done once per
+    fhour per case. The fixed mesh is constant for a case's lifetime, so the
+    grid-shape key only guards against accidental cross-grid reuse.
     """
+    cache = getattr(case, "_parent_cumulative_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            case._parent_cumulative_cache = cache
+        except AttributeError:  # slotted/frozen case: run without memoization
+            cache = None
+
     def cumulative_at(fh):
+        key = (fh, grid_lat.shape)
+        if cache is not None and key in cache:
+            return cache[key]
         path = parent_path_at_fhour(case, fh)
         if path is None:
             raise RuntimeError(
@@ -127,9 +145,15 @@ def parent_window_total(case, f1, f2, grid_lat, grid_lon):
         if rec is None:
             raise RuntimeError(
                 f"no APCP record in parent f{fh:03d} for init {case.init_str}")
-        return regrid_2d_to_fixed(rec["lats"], rec["lons"], rec["data"],
-                                  grid_lat, grid_lon)
+        field = regrid_2d_to_fixed(rec["lats"], rec["lons"], rec["data"],
+                                   grid_lat, grid_lon)
+        if cache is not None:
+            cache[key] = field
+        return field
 
+    # cumulative_at returns the cached array by reference; the arithmetic
+    # below (subtraction, np.where) always allocates new arrays, so callers
+    # never receive a handle that could mutate a cached field in place.
     total = cumulative_at(f2)
     if f1 > 0:
         total = total - cumulative_at(f1)

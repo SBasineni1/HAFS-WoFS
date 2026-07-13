@@ -285,6 +285,53 @@ def test_filter_window_pairs_boundaries():
     assert [h for h, _ in kept] == [51, 90, 96]
 
 
+def test_parent_window_total_memoizes_cumulative_fields():
+    """Sweeping consecutive windows must decode each fhour's cumulative
+    field once, not twice (as one window's f2 and the next window's f1)."""
+    import cycles
+
+    decoded = []
+
+    def fake_path(case, fh):
+        return Path(f"parent.f{fh:03d}.grb2")
+
+    def fake_records(path):
+        # Encode the fhour in the record so the field equals fh everywhere.
+        fh = int(path.stem.split(".f")[1])
+        return [{"lats": None, "lons": None, "data": fh}]
+
+    def fake_pick(records):
+        return records[0]
+
+    def fake_regrid(lats, lons, data, grid_lat, grid_lon):
+        decoded.append(data)  # data == fhour; one entry per real decode
+        return np.full(grid_lat.shape, float(data))
+
+    saved = (cycles.parent_path_at_fhour, cycles.read_hafs_tp_records,
+             cycles.pick_cumulative_record, cycles.regrid_2d_to_fixed)
+    cycles.parent_path_at_fhour = fake_path
+    cycles.read_hafs_tp_records = fake_records
+    cycles.pick_cumulative_record = fake_pick
+    cycles.regrid_2d_to_fixed = fake_regrid
+    try:
+        case = _stub_case("/tmp")
+        grid_lat = grid_lon = np.zeros((3, 3))
+        # Consecutive 6-h windows: f6, f6->f12, f12->f18.
+        w1 = cycles.parent_window_total(case, 0, 6, grid_lat, grid_lon)
+        w2 = cycles.parent_window_total(case, 6, 12, grid_lat, grid_lon)
+        w3 = cycles.parent_window_total(case, 12, 18, grid_lat, grid_lon)
+    finally:
+        (cycles.parent_path_at_fhour, cycles.read_hafs_tp_records,
+         cycles.pick_cumulative_record, cycles.regrid_2d_to_fixed) = saved
+
+    # Each distinct fhour (6, 12, 18) decoded exactly once — not 5 decodes.
+    assert sorted(decoded) == [6, 12, 18]
+    # Difference math still correct: every 6-h window accumulates 6 mm.
+    assert np.allclose(w1, 6.0)
+    assert np.allclose(w2, 6.0)
+    assert np.allclose(w3, 6.0)
+
+
 def test_nest_window_total_rejects_cumulative_records():
     import cycles
 

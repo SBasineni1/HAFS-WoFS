@@ -34,5 +34,5 @@ object_min_area_km2: 500
 
 bootstrap_replicates: 500
 random_seed: 42
-mrms_cache_dir: /tmp/mrms_cache
+mrms_cache_dir: /work2/noaa/aoml-hafs1/suchit/mrms_cache
 out_dir: analysis/output/helene_paper
