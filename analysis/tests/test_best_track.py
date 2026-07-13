@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FIX = Path(__file__).resolve().parent / "fixtures"
 
-from best_track import parse_bdeck
+from best_track import parse_bdeck, parse_bdeck_fixes
 
 
 def test_parse_bdeck_times_from_column_and_dedup():
@@ -28,6 +28,18 @@ def test_parse_bdeck_no_fixes_raises(tmp_path=None):
         assert False, "expected ValueError"
     except ValueError as e:
         assert str(p) in str(e)
+
+
+def test_parse_bdeck_fixes_reads_rmw_nautical_miles():
+    import tempfile
+    p = Path(tempfile.mkdtemp()) / "rmw.dat"
+    cols = ["AL", "01", "2025010100", "", "BEST", "0", "100N", "500W",
+            "50", "990", "TS", "34", "NEQ", "0", "0", "0", "0",
+            "1010", "200", "25"]
+    p.write_text(", ".join(cols) + "\n")
+    fixes = parse_bdeck_fixes(p)
+    assert len(fixes) == 1
+    assert fixes[0][3] == 25 * 1.852
 
 
 def _run_all():

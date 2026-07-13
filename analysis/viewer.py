@@ -49,6 +49,10 @@ def read_config(path: Path) -> dict:
 
 
 def config_kind(cfg: dict) -> str:
+    if "storms" in cfg:
+        return "paper_suite"
+    if "models" in cfg and "best_track" in cfg:
+        return "paper"
     if "run_dir" in cfg:
         return "case"
     if "run_root" in cfg:
@@ -77,6 +81,10 @@ def output_dir_for(path: Path, cfg: dict) -> Path:
 def model_label(cfg: dict) -> str:
     if cfg.get("model_label"):
         return str(cfg["model_label"])
+    if isinstance(cfg.get("models"), dict):
+        return " / ".join(str(name) for name in cfg["models"])
+    if isinstance(cfg.get("models"), list):
+        return " / ".join(str(item.get("name", "model")) for item in cfg["models"])
     source = str(cfg.get("run_dir", cfg.get("run_root", ""))).upper()
     if "HFSA" in source:
         return "HAFS-A"
@@ -109,7 +117,8 @@ def generate(configs: list[Path], mode: str) -> list[tuple[Path, int]]:
     for path in configs:
         cfg = read_config(path)
         kind = config_kind(cfg)
-        command = {"case": "all", "cycles": "cycles", "compare": "compare"}.get(kind)
+        command = {"case": "all", "cycles": "cycles", "compare": "compare",
+                   "paper": "paper", "paper_suite": "paper"}.get(kind)
         if command is None or (mode == "missing" and not needs_generation(path, cfg)):
             continue
         print(f"\n--- Generating {path.stem} ({command}) ---", flush=True)
@@ -161,11 +170,13 @@ def build_manifest(configs: list[Path], output_root: Path) -> dict:
             for item in candidates:
                 files.append(_file_record(item, output_root))
                 assigned.add(item.resolve())
+        default_init = {"cycles": "all cycles", "paper": "multiple inits",
+                        "paper_suite": "multiple storms"}.get(kind, "comparison")
         cases.append({
             "id": path.stem,
             "storm": str(cfg.get("storm_name", cfg.get("label", path.stem))),
             "model": model_label(cfg),
-            "init": str(cfg.get("init", "all cycles" if kind == "cycles" else "comparison")),
+            "init": str(cfg.get("init", default_init)),
             "kind": kind,
             "config": path.resolve().relative_to(REPO_ROOT).as_posix(),
             "files": files,

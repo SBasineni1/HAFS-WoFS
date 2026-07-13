@@ -1,0 +1,12 @@
+# Multi-storm homogeneous aggregate. Add one paper-storm YAML per storm.
+# Each listed storm also produces its own storm-relative and object products;
+# this suite adds pooled ETS/frequency-bias/track-shift figures.
+label: HAFS multi-storm QPF verification
+storms:
+  - storms/helene_paper.yaml
+  # - storms/ian_paper.yaml
+  # - storms/idalia_paper.yaml
+  # - storms/lee_paper.yaml
+bootstrap_replicates: 1000
+random_seed: 42
+out_dir: analysis/output/paper_multistorm

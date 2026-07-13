@@ -41,6 +41,12 @@ def test_parse_args_accepts_cycles():
     assert command == "cycles"
 
 
+def test_parse_args_accepts_paper():
+    yaml_path, command = parse_args(["storms/helene_paper.yaml", "paper"])
+    assert yaml_path == "storms/helene_paper.yaml"
+    assert command == "paper"
+
+
 def _run_all():
     """Discover and run all test_* functions."""
     import inspect

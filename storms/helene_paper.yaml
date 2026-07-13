@@ -1,0 +1,38 @@
+# Newman et al. (2024)-style verification for Hurricane Helene.
+# Produces track-shift, threshold-by-lead, storm-relative/RMW, radial, and
+# object-based plots for both HAFS configurations over homogeneous cycles.
+storm_name: Hurricane Helene
+models:
+  HAFS-A: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSA
+  HAFS-B: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSB
+best_track: /work2/noaa/aoml-hafs1/suchit/bal092024.dat
+domain: [15.0, 42.0, -100.0, -60.0]
+
+# Omit inits to use the intersection of YYYYMMDDHH directories across models.
+# inits: [2024092400, 2024092412]
+lead_hours: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96, 102, 108, 114, 120, 126]
+accumulation_hours: 6
+forecast_domain: parent
+grid_res: 0.1
+mask_radius_km: 600
+
+# Paper thresholds: 0.1, 0.5, 1.0, 1.5, 2.5, 3.5, and 5.0 inches in mm.
+thresholds_mm: [2.54, 12.7, 25.4, 38.1, 63.5, 88.9, 127.0]
+headline_thresholds_mm: [2.54, 63.5]
+
+composite_lead_hour: 12
+storm_relative_radius_rmw: 6
+storm_relative_res_rmw: 0.2
+radial_bin_rmw: 0.4
+rmw_fallback_km: 50
+
+object_lead_hour: 12
+# object_init: 2024092412       # optional specific demonstration cycle
+object_threshold_mm: 10
+object_smooth_cells: 1
+object_min_area_km2: 500
+
+bootstrap_replicates: 500
+random_seed: 42
+mrms_cache_dir: /tmp/mrms_cache
+out_dir: analysis/output/helene_paper

@@ -21,6 +21,13 @@ def test_config_kind_and_expected_files():
     ]
 
 
+def test_config_kind_recognizes_paper_configs():
+    assert viewer.config_kind({"models": {}, "best_track": "/best"}) == "paper"
+    assert viewer.config_kind({"storms": ["alpha.yaml"]}) == "paper_suite"
+    assert viewer.model_label({"models": {"HAFS-A": "/a", "HAFS-B": "/b"}}) == \
+        "HAFS-A / HAFS-B"
+
+
 def test_manifest_groups_case_files_and_orphans():
     with tempfile.TemporaryDirectory(dir=viewer.REPO_ROOT) as tmp:
         root = Path(tmp)
