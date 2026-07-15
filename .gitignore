@@ -9,9 +9,11 @@
 *.tar
 *.tar.gz
 *.zip
+*.idx
 HFSA/
 HFSB/
 data/
+HeleneHAFSA/
 
 # Python
 __pycache__/
@@ -24,6 +26,7 @@ env/
 dist/
 build/
 .eggs/
+.pytest_cache/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -43,11 +46,10 @@ Thumbs.db
 # Claude
 CLAUDE.md
 
-# Logs and temp outputs
+# Generated analysis products and local scratch
 *.log
 *.tmp
-analysis/output/viewer-manifest.json
-analysis/output/hafs-viewer.html
+analysis/output/
 
 # Superpowers workflow scratch (specs, plans, ledgers) - local only
 .superpowers/

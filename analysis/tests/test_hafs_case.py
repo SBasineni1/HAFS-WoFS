@@ -216,6 +216,22 @@ def test_find_atcfunix_skips_aggregate():
         shutil.rmtree(tmpdir)
 
 
+def test_find_atcfunix_selects_configured_init():
+    """A storm-level run root may contain tracks from many cycles."""
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        for init in ("2024092400", "2024092412"):
+            cycle = tmpdir / init
+            cycle.mkdir()
+            (cycle / f"hafs.{init}.09l.atcfunix").write_text(
+                f"AL, 09, {init}, 03, HFSA, 000, 168N, 832W, 65, 985\n"
+            )
+        chosen = find_atcfunix(tmpdir, "2024092412")
+        assert "2024092412" in str(chosen)
+    finally:
+        shutil.rmtree(tmpdir)
+
+
 def test_from_yaml_explicit_atcfunix():
     """Fix 1: YAML 'atcfunix' key overrides auto-discovery."""
     tmpdir = Path(tempfile.mkdtemp())

@@ -3,7 +3,7 @@
     python analysis/run.py <case.yaml> [parent|ets|rmse|cycles|all|compare|replot]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
-  parent  the parent-domain QPF vs MRMS vs Stage IV 3-panel figure
+  parent  nest + parent QPF vs MRMS + Stage IV 4-panel figure
   ets     the combined parent+nest ETS-vs-threshold figure + CSV
   rmse    storm-total RMSE/MAE/bias/r scatter panels + CSV
   cycles  per-initialization comparison on a common valid window (takes a cycles YAML)

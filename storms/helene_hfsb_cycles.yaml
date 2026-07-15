@@ -1,11 +1,11 @@
-# HAFS-A — Hurricane Helene, all eligible initializations over one landfall
+# HAFS-B — Hurricane Helene, all eligible initializations over one landfall
 # rainfall window. YYYYMMDDHH subdirectories are discovered automatically.
-run_root: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSA
+run_root: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSB
 valid_start: 2024092600
-valid_end:   2024092800
+valid_end: 2024092800
 storm_name: Hurricane Helene
 domain: [15.0, 42.0, -100.0, -60.0]
 mask_radius_km: 500
-out_dir: analysis/output/helene_hfsa_cycles
+out_dir: analysis/output/helene_hfsb_cycles
 # inits: [2024092400, 2024092412]  # optional override of auto-discovery
 # ets_threshold_mm: 25

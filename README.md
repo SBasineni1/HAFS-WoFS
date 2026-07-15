@@ -1,405 +1,227 @@
-# HAFS & WoFS
+# HAFS & WoFS rainfall verification
 
-A Comparative Evaluation of Rainfall Forecast Skill for Landfalling Tropical
-Cyclones from HAFS and WoFS.
+Case-driven tools for evaluating tropical-cyclone quantitative precipitation
+forecasts. The current implementation covers HAFS-A and HAFS-B; WoFS and
+multi-storm aggregation are planned extensions.
 
-This repo holds a **case-driven framework** that, for any storm and any HAFS
-configuration (HFSA or HFSB), produces:
+The framework supports three analysis levels:
 
-1. **A parent-domain QPF comparison** — HAFS parent total rainfall vs MRMS QPE
-   vs NCEP Stage IV QPE, as a 3-panel map (`parent_qpf_<case>.png`).
-2. **An ETS skill plot + table** — Equitable Threat Score vs rainfall threshold
-   for the HAFS parent *and* 2-km nest, each verified against MRMS and Stage IV
-   over the TC rainfall swath (`ets_full_<case>.png` + `.csv`).
-3. **A cycle-comparison product** — for one storm and model configuration,
-   scores every eligible initialization over the same rainfall window and
-   shared verification footprint (`cycles` mode).
+1. One model initialization: QPF maps, categorical skill, and continuous
+   errors.
+2. Every eligible initialization of one model: a fixed-window comparison that
+   isolates lead-time differences.
+3. HAFS-A versus HAFS-B for one initialization: a head-to-head comparison over
+   a shared NHC best-track footprint.
 
-Running a new storm only requires a small YAML file pointing at the run
-directory — the storm track, init time, and HAFS-A/B label are read
-automatically from the run's `.atcfunix` track and path.
+## Setup
 
----
-
-## Quick start
-
-One-time setup, then one command per product — details in the numbered
-sections below.
+On Orion or Hercules:
 
 ```bash
-# Setup (once, on Orion/Hercules — §1)
 module load miniconda3
 conda env create -f environment.yml
 conda activate hafs
-
-# Per-run products for one initialization (§3): qualitative parent-domain
-# rainfall map + ETS curves + RMSE scatter, all in one go
-python analysis/run.py storms/helene_hfsa.yaml all
-
-# ...or individually:
-python analysis/run.py storms/helene_hfsa.yaml parent   # qualitative 3-panel rainfall map
-python analysis/run.py storms/helene_hfsa.yaml ets      # ETS vs threshold + CSV
-python analysis/run.py storms/helene_hfsa.yaml rmse     # RMSE/MAE/bias/r scatter + CSV
-
-# Another initialization of the same storm: copy the YAML, change `init:` (§4)
-python analysis/run.py storms/helene_hfsa_2024092412.yaml all
-
-# Cross-initialization comparison (§5): every eligible cycle scored over one
-# common valid window — metrics-vs-init figure + QPF map small-multiples
-python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
-
-# Browse every storm/init and its QPF, ETS, and RMSE figures in one place
-python analysis/viewer.py
-
-# Generate any missing products first, then open the same live viewer
-python analysis/viewer.py --generate missing
-
-# Pull the figures to your laptop (run this FROM the laptop — §3)
-scp -r <user>@<cluster>:/path/to/HAFS-WoFS/analysis/output/<case> ~/Downloads/
 ```
 
----
+The main dependencies are NumPy, SciPy, PyYAML, boto3, cfgrib, ecCodes,
+xarray, Matplotlib, and Cartopy. `environment.yml` is preferred because it
+installs the required native GRIB and mapping libraries.
 
-## 1. Setup (conda on Orion / Hercules)
+MRMS observations are downloaded anonymously from NOAA's public S3 bucket.
+Stage IV files are downloaded from `water.noaa.gov`. Downloads are cached in
+`/tmp/mrms_cache` and `/tmp/stage4_cache` unless a YAML file overrides those
+locations.
 
-The framework needs a Python 3 environment with the scientific GRIB stack. The
-fastest path is the conda env file in this repo.
+## Expected HAFS layout
 
-```bash
-# 1. Make conda available (adjust to your cluster — on Orion/Hercules this is
-#    usually a module load, or sourcing your own miniconda install):
-module load miniconda3          # or: source ~/miniconda3/etc/profile.d/conda.sh
+A model root should contain one `YYYYMMDDHH` directory per initialization:
 
-# 2. Create the environment from the repo (run from the repo root):
-conda env create -f environment.yml      # creates an env named "hafs"
-
-# 3. Activate it:
-conda activate hafs
-```
-
-**Already have a working `hafs` env?** You likely only need PyYAML, which isn't
-always installed:
-
-```bash
-conda activate hafs
-pip install pyyaml          # or: conda install -c conda-forge pyyaml
-```
-
-The full dependency list (also in `environment.yml` / `requirements.txt`):
-`numpy`, `scipy`, `pyyaml`, `boto3`, `cfgrib`, `eccodes`, `xarray`,
-`matplotlib`, `cartopy`.
-
-> **Network note:** the verification step downloads MRMS QPE (AWS S3, anonymous)
-> and Stage IV QPE (water.noaa.gov). The login nodes on Orion/Hercules have
-> outbound internet, so running there works; first runs are slower while these
-> cache to `/tmp` (override with `mrms_cache_dir` / `stage4_cache_dir` in the
-> YAML).
-
----
-
-## 2. What the framework expects
-
-Point a case at the **run directory** for one storm + one HAFS config. The
-framework globs recursively under it for:
-
-- `*.atcfunix`           — the forecast track (storm name, init, and track fixes)
-- `*parent.atm.f*.grb2`  — parent-domain output (for the parent QPF + parent ETS)
-- `*storm.atm.f*.grb2`   — 2-km nest output (for the nest ETS curve)
-
-Example (Helene HFSA on Hercules):
-
-```
-/work2/.../helene/HFSA/2024092400/
+```text
+/work2/.../helene/HFSA/
+  2024092400/
     09l.2024092400.hfsa.parent.trak.atcfunix
-    09l.2024092400.hfsa.parent.atm.f000.grb2 … f126.grb2
-    09l.2024092400.hfsa.storm.atm.f000.grb2  … f126.grb2
+    09l.2024092400.hfsa.parent.atm.f000.grb2
+    09l.2024092400.hfsa.parent.atm.f003.grb2
+    ...
+    09l.2024092400.hfsa.storm.atm.f000.grb2
+    09l.2024092400.hfsa.storm.atm.f003.grb2
+    ...
+  2024092412/
+  ...
 ```
 
-HAFS-A vs HAFS-B is auto-detected from `HFSA` / `HFSB` in the path.
+Large model data and generated products are intentionally excluded from Git.
 
----
+## Run one initialization
 
-## 3. Running
+A per-initialization YAML points to the model root or initialization directory:
 
-From the repo root, with the env activated:
-
-```bash
-python analysis/run.py storms/<case>.yaml all      # parent map + ETS + RMSE (default)
-python analysis/run.py storms/<case>.yaml parent   # qualitative 3-panel rainfall map only
-python analysis/run.py storms/<case>.yaml ets      # ETS plot + CSV only
-python analysis/run.py storms/<case>.yaml rmse     # RMSE scatter + CSV only
-python analysis/run.py storms/helene_hfsa_cycles.yaml cycles  # cross-init comparison
+```yaml
+run_dir: /work2/.../helene/HFSA
+storm_name: Hurricane Helene
+init: 2024092400
+domain: [15.0, 42.0, -100.0, -60.0]
+mask_radius_km: 500
+out_dir: analysis/output/helene_hfsa
 ```
 
-The two shipped examples:
+Run all products or select one:
 
 ```bash
 python analysis/run.py storms/helene_hfsa.yaml all
-python analysis/run.py storms/helene_hfsb.yaml all
+python analysis/run.py storms/helene_hfsa.yaml parent
+python analysis/run.py storms/helene_hfsa.yaml ets
+python analysis/run.py storms/helene_hfsa.yaml rmse
 ```
 
-### One-file analysis viewer
+`all` builds the expensive verification fields once and shares them between
+the ETS and continuous-error products.
 
-Run `python analysis/viewer.py` from the repository root and open the printed
-address (normally `http://127.0.0.1:8765`). The storm, model, and initialization
-selectors put the side-by-side QPF map, ETS curve, RMSE scatter, and their CSVs
-in one gallery. The page rescans `analysis/output/` every five seconds, so new
-graphics appear automatically while it remains open.
+Outputs are initialization-tagged and written below the configured `out_dir`:
 
-When the viewer runs on Hercules, `127.0.0.1` refers to the remote login node.
-Keep it running and create an SSH tunnel from a second terminal on your laptop:
+```text
+parent_qpf_<case>_<init>.png    nest + parent + MRMS + Stage IV QPF
+ets_full_<case>_<init>.png     ETS versus rainfall threshold
+ets_full_<case>_<init>.csv     contingency counts and categorical scores
+rmse_scatter_<case>_<init>.png forecast-versus-observed scatter panels
+rmse_<case>_<init>.csv         RMSE, MAE, bias, and correlation
+```
+
+## Compare every initialization of one model
+
+This is the scalable workflow for roughly ten pre-landfall runs. A single YAML
+describes a storm, model, and absolute verification window; initialization
+directories are discovered automatically.
+
+```yaml
+run_root: /work2/.../helene/HFSA
+valid_start: 2024092600
+valid_end: 2024092800
+storm_name: Hurricane Helene
+domain: [15.0, 42.0, -100.0, -60.0]
+mask_radius_km: 500
+out_dir: analysis/output/helene_hfsa_cycles
+```
+
+Run either model with its corresponding config:
 
 ```bash
-ssh -N -L 8765:127.0.0.1:8765 <your-normal-Hercules-SSH-host>
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
+python analysis/run.py storms/helene_hfsb_cycles.yaml cycles
 ```
 
-Then open `http://127.0.0.1:8765` on the laptop. The viewer detects an SSH
-session and prints these instructions automatically. Pass `--ssh-host hercules`
-if you want it to print your exact SSH alias.
+Only cycles that initialize on or before `valid_start` and extend through
+`valid_end` are included. Use an optional `inits:` list only when automatic
+discovery should be restricted.
 
-If Hercules rejects the tunnel with `administratively prohibited`, export a
-single offline gallery instead:
+Every surviving cycle is accumulated over the same absolute time window and
+verified against the same MRMS/Stage IV totals. Scores use one shared swath:
+the union of all surviving forecast-track positions during the valid window.
+This prevents changing accumulation periods or footprints from masquerading
+as changes in forecast skill.
+
+Cycle outputs are:
+
+```text
+cycles_<case>_<start>_<end>.csv
+cycles_metrics_<case>_<start>_<end>.png
+cycles_maps_<case>_<start>_<end>.png
+```
+
+The CSV contains parent and nest scores for every initialization. The maps
+show nest QPF for each initialization alongside the shared MRMS total.
+
+## Compare HAFS-A and HAFS-B
+
+The two case YAMLs must describe the same storm and initialization. Download
+the storm's NHC ATCF b-deck and reference it from a comparison YAML:
+
+```yaml
+label: Hurricane Helene
+cases:
+  - storms/helene_hfsa.yaml
+  - storms/helene_hfsb.yaml
+best_track: /work2/.../bal092024.dat
+out_dir: analysis/output/helene_compare
+```
+
+```bash
+python analysis/run.py storms/helene_compare.yaml compare
+```
+
+Both configurations are evaluated on the same best-track swath and common
+finite-data coverage. Products include categorical curves, FSS by
+neighborhood scale, a performance diagram, storm-total maps and exceedance
+areas, and RMW-normalized storm-relative composites. CSVs contain the complete
+categorical and FSS matrices.
+
+Existing comparison CSVs can be replotted without reopening GRIB files:
+
+```bash
+python analysis/run.py storms/helene_compare.yaml replot
+```
+
+## Analysis viewer
+
+Browse generated cases locally:
+
+```bash
+python analysis/viewer.py
+```
+
+Generate missing products first:
+
+```bash
+python analysis/viewer.py --generate missing
+```
+
+On a remote cluster, forward the printed port through SSH. If port forwarding
+is unavailable, create a self-contained gallery:
 
 ```bash
 python analysis/viewer.py --export
 ```
 
-Download `analysis/output/hafs-viewer.html` through the
-[Hercules Open OnDemand portal](https://hercules-ood.hpc.msstate.edu), then open
-that file on the laptop. Its plots and CSV links are embedded, so it needs no
-server or network connection. Re-export after generating new graphics.
+## Verification details
 
-To make plots and view them with one command:
+- The fixed HAFS parent grid uses its cumulative `0 -> forecast hour` APCP
+  record.
+- The moving nest cannot use its storm-relative cumulative APCP as a
+  geographic storm total. The code regrids and sums short, geographically
+  valid incremental buckets instead.
+- MRMS uses hourly gauge-corrected multisensor QPE accumulated over the exact
+  requested window.
+- Stage IV is CONUS-only and consists of 12Z-to-12Z daily products. Summing
+  touched days approximates windows that do not align to those boundaries;
+  figures and CSV workflows retain that caveat.
+- Categorical outputs include ETS, CSI, frequency bias, POD, FAR, and HSS.
+- Continuous outputs include RMSE, MAE, mean bias, and Pearson correlation.
+- FSS evaluates spatial displacement tolerance across neighborhood sizes.
 
-```bash
-python analysis/viewer.py --generate missing              # all storm YAMLs
-python analysis/viewer.py --generate always --case helene_hfsa
-python analysis/viewer.py --generate missing --no-serve   # batch/HPC only
-```
-
-`missing` leaves complete cases alone; `always` recomputes the selected cases.
-The viewer recognizes normal per-init, cycles, and HFSA-vs-HFSB comparison
-YAMLs and sends each to the existing `analysis/run.py` workflow. A failed case
-does not hide plots that were already generated for the other cases.
-
-Each run prints a one-line case summary (storm, model, init, domain, track
-file) so you can sanity-check the auto-detection before it grinds through the
-GRIB files.
-
-### Outputs
-
-Land in `analysis/output/<case>/` (or wherever `out_dir` points):
-
-```
-parent_qpf_<case>.png     # HAFS parent vs MRMS vs Stage IV, 3-panel
-ets_full_<case>.png       # ETS vs threshold: parent/nest × MRMS/Stage IV
-ets_full_<case>.csv       # the same scores as a table (a/b/c/d, ETS, bias, POD, FAR, CSI)
-rmse_scatter_<case>.png   # forecast-vs-observed hexbin panels: parent/nest × MRMS/Stage IV
-rmse_<case>.csv           # storm-total continuous scores (n, RMSE, MAE, bias, r)
-cycles_<slug>.csv         # per-init continuous + categorical scores for a common window
-cycles_metrics_<slug>.png # RMSE, bias, and ETS vs initialization time
-cycles_maps_<slug>.png    # nest window-QPF panels per init + an observed-MRMS panel
-```
-
-For `cycles` outputs, `<slug>` is `<cycles-yaml-stem>_<valid-start>_<valid-end>`
-(for example, `helene_hfsa_cycles_2024092600_2024092800`). The cycles CSV is
-long format: one row per initialization, forecast, observation, and rainfall
-threshold. `bias_mm` is continuous mean forecast-minus-observation error in
-millimetres; `bias` is categorical frequency bias.
-
-> **Init tagging:** every output filename is automatically stamped with the run's
-> initialization time (e.g. `parent_qpf_helene_hfsa_2024092400.png`,
-> `ets_full_helene_hfsa_2024092400.csv`), so a storm's many init times never
-> overwrite each other. You don't need the init in the YAML name — it's added
-> automatically (and de-duplicated if you do include it).
-
-### Pull results to your laptop
+## Tests
 
 ```bash
-scp -r <user>@<cluster>:/path/to/HAFS-WoFS/analysis/output/<case> ~/Downloads/
-open ~/Downloads/<case>/*.png      # macOS
+python -m pytest analysis/tests -q
 ```
 
----
+Tests use synthetic fields and small track fixtures; they do not require the
+HPC model archive or observation downloads.
 
-## 4. Adding a new storm
+## Repository layout
 
-Copy a YAML and change `run_dir` — that's the minimum:
-
-```bash
-cp storms/helene_hfsa.yaml storms/<storm>_<model>.yaml
-```
-
-```yaml
-# storms/<storm>_<model>.yaml
-run_dir: /work2/.../<storm>/HFSA          # REQUIRED — the only thing you must set
-
-# Everything below is OPTIONAL — auto-derived from the .atcfunix + path if omitted:
-storm_name: Hurricane <Name>              # else from the atcfunix
-init: 2024092400                          # YYYYMMDDHH; else from the atcfunix
-domain: [15.0, 42.0, -100.0, -60.0]       # lat_min, lat_max, lon_min, lon_max; else from track bbox
-mask_radius_km: 500                       # TC verification swath radius
-out_dir: analysis/output/<storm>_<model>
-```
-
-Then `python analysis/run.py storms/<storm>_<model>.yaml all`.
-
-For **another initialization of the same storm**, copy the YAML and change
-only `init:` (see `storms/helene_hfsa_2024092412.yaml`) — `run_dir` stays the
-storm/model root, and the init-tagged output filenames keep runs from
-overwriting each other even in a shared `out_dir`.
-
----
-
-## 5. Comparing initialization cycles
-
-Use `cycles` to compare a single model configuration's forecasts as their
-initializations approach landfall. It takes a storm-level cycles YAML rather
-than a normal per-init case YAML:
-
-```bash
-python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
-```
-
-```yaml
-# storms/<storm>_<model>_cycles.yaml
-run_root: /work2/.../<storm>/HFSA  # YYYYMMDDHH subdirectories, one per cycle
-valid_start: 2024092600            # REQUIRED: common UTC window start
-valid_end: 2024092800              # REQUIRED: common UTC window end
-domain: [15.0, 42.0, -100.0, -60.0] # REQUIRED: lat_min, lat_max, lon_min, lon_max
-
-# Optional:
-storm_name: Hurricane <Name>
-mask_radius_km: 500
-out_dir: analysis/output/<storm>_<model>_cycles
-inits: [2024092400, 2024092412]    # otherwise discover YYYYMMDDHH directories
-ets_threshold_mm: 25               # headline threshold in the metrics figure
-```
-
-`run_root` subdirectories named `YYYYMMDDHH` are discovered and sorted unless
-you set `inits:` explicitly. A cycle is included only when
-`init ≤ valid_start` and `init + maximum forecast hour ≥ valid_end`.
-Skipped cycles are printed with their reason; a cycle with missing GRIB data
-inside the window is also skipped so the remaining eligible cycles can run.
-
----
-
-## 6. Comparing HFSA vs HFSB (head-to-head)
-
-To score two configs of the same storm against each other over one **shared,
-fair verification swath** (the NHC best track), use a comparison config.
-
-1. Fetch the storm's NHC best track (ATCF b-deck) once:
-
-       wget https://ftp.nhc.noaa.gov/atcf/archive/<year>/b<basin><cy><year>.dat.gz
-       gunzip b<basin><cy><year>.dat.gz
-       # Helene 2024 -> bal092024.dat
-
-2. Edit `storms/helene_compare.yaml` (or copy it) to point `cases:` at the two
-   case YAMLs and `best_track:` at the file you just downloaded.
-
-3. Run:
-
-       python analysis/run.py storms/helene_compare.yaml compare
-
-Outputs in `out_dir`:
-
-- `compare_categorical_<label>.png` — ETS / CSI / frequency bias vs threshold,
-  HFSA vs HFSB (parent solid, nest dashed), vs MRMS
-- `compare_fss_<label>.png` — Fractions Skill Score vs neighborhood scale
-- `compare_categorical_<label>.csv`, `compare_fss_<label>.csv` — the full matrix
-  (both forecasts × MRMS & Stage IV, all thresholds/scales)
-
-The two cases must share an initialization time (the comparison errors if they
-don't). The comparison outputs are init-tagged too
-(`compare_categorical_hurricane_helene_2024092400.png`), and each CSV has a
-leading `init` column.
-
-Both models are scored over the identical best-track swath, so their point
-counts (`n`) match and the comparison is apples-to-apples. For the nest
-comparison, both models are scored over the common coverage of both nests
-(points where only one nest has valid data are excluded), so nest `n` also
-matches. This step runs ~2× a single `ets` run (it builds both models' nest
-totals).
-
----
-
-## 7. How to read the ETS plot
-
-Each `ets_full_<case>.png` has four curves for one model run:
-
-- **parent vs MRMS / parent vs Stage IV** — the 6-km parent domain
-- **nest vs MRMS / nest vs Stage IV** — the 2-km moving nest
-
-Within a single run, parent and nest are scored over the **same** swath, so
-comparing them ("does the high-res nest verify better than the parent?") is a
-fair, apples-to-apples read.
-
-> **Comparing HFSA to HFSB directly:** each model is scored over *its own*
-> forecast-track swath, so the point counts (`n`) differ between A and B. That
-> makes a direct A-vs-B ETS comparison a confound. If you need a clean
-> head-to-head, both should be verified over a common swath (e.g. the NHC best
-> track) — not yet implemented; ask if you want it.
-
----
-
-## 8. How to read the RMSE scatter
-
-Each `rmse_scatter_<case>.png` panel plots every swath grid point's
-storm-total rainfall: observed (x) vs forecast (y), with a dotted 1:1
-line. Points above the line are over-forecasts. The annotation box gives:
-
-- **RMSE** — root-mean-square error of the totals (mm); penalizes big misses.
-- **MAE** — mean absolute error (mm).
-- **bias** — mean(forecast − observed): **positive = over-forecast**.
-- **r** — Pearson correlation of the point totals.
-- **n** — valid swath points scored (same footprint as the ETS).
-
-RMSE/MAE/bias are continuous companions to the categorical ETS curves:
-ETS asks "did we put rain ≥ X in the right places", the scatter asks
-"how far off were the amounts".
-
----
-
-## 9. How to read the cycle comparison
-
-Every included cycle is accumulated over the same absolute
-`valid_start`–`valid_end` window and verified against the same observed total.
-Therefore, changes in RMSE, bias, or ETS across initialization times describe
-lead-time differences rather than changing accumulation lengths.
-
-All cycles are scored on one shared swath: the union of each included cycle's
-forecast-track positions within the valid window, expanded by
-`mask_radius_km`. A run with an inaccurate track is thus penalized for placing
-rain in the wrong location; that is intentionally part of the comparison.
-
-The small-multiple map shows each cycle's **nest** window-total QPF plus the
-MRMS observed total; it does not include parent-domain map panels. Metrics and
-CSV scores include both parent and nest forecasts. Stage IV is scored when it
-is available, but remains CONUS-only and is based on 12Z–12Z daily products
-summed over the days touched by the requested window, so it approximates an
-arbitrary UTC window. If Stage IV is unavailable, the product continues with
-MRMS-only scoring and marks that caveat in its output.
-
----
-
-## Project layout
-
-```
+```text
 analysis/
-  run.py          # entry point — loads a YAML case, runs the products
-  hafs_case.py    # StormCase config: YAML loader + .atcfunix track parser
-  hafs_common.py  # shared plumbing: HAFS GRIB readers, nest accumulation, MRMS
-  parent_qpf.py   # parent QPF vs MRMS vs Stage IV 3-panel + Stage IV downloader
-  ets_full.py     # combined parent+nest ETS figure + CSV
-  ets_score.py    # ETS contingency math + MRMS/swath helpers
-  cycles.py       # cross-initialization comparison on a common valid window
-  tests/          # standalone unit tests (run: python3 analysis/tests/<file>.py)
-storms/           # per-storm YAML case files
-analysis/output/  # generated figures (gitignored)
+  run.py             command dispatcher
+  hafs_case.py       YAML loading, track parsing, and case models
+  hafs_common.py     GRIB loading, nest accumulation, and MRMS access
+  parent_qpf.py      QPF maps and Stage IV access
+  ets_full.py        per-run categorical verification
+  rmse_scatter.py    per-run continuous verification
+  cycles.py          fixed-window, multi-initialization analysis
+  compare.py         HAFS-A versus HAFS-B analysis
+  skill_metrics.py   shared continuous and neighborhood metrics
+  best_track.py      NHC b-deck parsing
+  viewer.py          local/offline results gallery
+  tests/             unit and plotting tests
+storms/              active case and cycle configurations
 ```
-
-## Data
-
-Large model output lives on the HPC and is never committed. See the HFSA/HFSB
-paths in the example `storms/*.yaml`.

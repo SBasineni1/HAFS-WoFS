@@ -192,10 +192,13 @@ def _is_aggregate_track(path):
     return False
 
 
-def find_atcfunix(run_dir):
-    """Best *.atcfunix under run_dir, deprioritizing aggregate (00) tracks.
+def find_atcfunix(run_dir, init_str=None):
+    """Best *.atcfunix under run_dir for an optional initialization.
 
-    Raises FileNotFoundError naming the dir when no file matches.
+    When ``init_str`` is supplied, candidates are restricted to paths or track
+    contents matching that cycle before aggregate (cyclone 00) tracks are
+    deprioritized. Raises FileNotFoundError naming the directory and cycle when
+    no file matches.
     """
     hits = sorted(Path(run_dir).glob("**/*.atcfunix"))
     if not hits:
@@ -204,6 +207,22 @@ def find_atcfunix(run_dir):
             f"Add an explicit 'track', 'init', and 'domain' to the YAML to run "
             f"without one."
         )
+    if init_str is not None:
+        init_str = str(init_str)
+        matching = [p for p in hits if init_str in str(p)]
+        if not matching:
+            for path in hits:
+                try:
+                    _, track_init, _ = parse_atcfunix(path)
+                except OSError:
+                    continue
+                if track_init and track_init.strftime("%Y%m%d%H") == init_str:
+                    matching.append(path)
+        if not matching:
+            raise FileNotFoundError(
+                f"No .atcfunix track for init {init_str} under {run_dir}."
+            )
+        hits = matching
     if len(hits) == 1:
         print(f"Using track file: {hits[0]}")
         return hits[0]
@@ -235,6 +254,10 @@ def from_yaml(yaml_path):
             )
         raise KeyError(f"'run_dir' is required in {yaml_path}")
     run_dir = Path(cfg["run_dir"])
+    configured_init = (datetime.strptime(str(cfg["init"]), "%Y%m%d%H")
+                       if cfg.get("init") else None)
+    configured_init_str = (configured_init.strftime("%Y%m%d%H")
+                           if configured_init else None)
 
     # Explicit atcfunix path from YAML, or auto-discover.
     if cfg.get("atcfunix"):
@@ -247,7 +270,7 @@ def from_yaml(yaml_path):
             )
         print(f"Using track file: {atcf_path}")
     else:
-        atcf_path = find_atcfunix(run_dir)
+        atcf_path = find_atcfunix(run_dir, configured_init_str)
     name, init_from_atcf, track = parse_atcfunix(atcf_path)
 
     if not track:
@@ -257,10 +280,7 @@ def from_yaml(yaml_path):
         )
 
     # init: YAML override (YYYYMMDDHH) else from atcfunix.
-    if cfg.get("init"):
-        init_dt = datetime.strptime(str(cfg["init"]), "%Y%m%d%H")
-    else:
-        init_dt = init_from_atcf
+    init_dt = configured_init or init_from_atcf
     init_str = init_dt.strftime("%Y%m%d%H")
 
     domain = tuple(cfg["domain"]) if cfg.get("domain") else auto_domain(track)

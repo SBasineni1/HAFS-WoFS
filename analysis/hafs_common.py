@@ -11,7 +11,7 @@ This module holds the storm-agnostic building blocks the framework reuses:
     for the TC-swath masks.
   * The shared QPF color scale (levels + colors).
 
-Consumed by parent_qpf.py (parent 3-panel), ets_score.py (ETS helpers), and
+Consumed by parent_qpf.py (QPF maps), ets_score.py (ETS helpers), and
 ets_full.py (combined parent+nest ETS). Not a runnable script — use run.py.
 """
 
@@ -200,8 +200,9 @@ def accumulate_hafs_step(running, interp, mode):
 def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
     """Full-event accumulated HAFS precip (mm) on the fixed grid.
 
-    Selects the cumulative tp record per frame and folds it in with the right
-    reducer.  Returns (total, mode).
+    Selects the shortest positive accumulation bucket in each moving-nest
+    frame, regrids it geographically, and adds it to the running total.
+    Returns (total, mode).
     """
     total = np.zeros(grid_lat.shape)
     mode_seen = None
@@ -229,7 +230,7 @@ def hafs_event_total(file_pairs, grid_lat, grid_lon, verbose=True):
         # silent, so without this the loop looks hung on large grids.
         if verbose:
             print(f"  nest F{fhour:03d} [{i}/{n_files}] "
-                  f"running max {np.nanmax(total):.0f} mm", flush=True)
+                  f"running total {np.nanmax(total):.0f} mm", flush=True)
     return total, (mode_seen or "cumulative")
 
 

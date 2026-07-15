@@ -15,11 +15,10 @@ Two observed-QPE references are shown for comparison of rainfall amounts:
     CONUS-only, so Helene's Gulf/Caribbean rain won't appear in that panel.
 
 The 2-km moving NEST is higher-res but its cumulative tp is storm-relative
-(needs per-interval bucket summing and still scallops with storm speed); the
+(so geographically valid per-interval buckets are regridded and summed); the
 parent domain is coarser (lower peaks) but geographically honest and viewer-
-consistent.  The nest running-max total (same field ets_full.py scores, via
-hafs_common.hafs_event_total) is shown as the first panel for comparison; its
-title carries the inflation caveat.
+consistent. The reconstructed nest total (the same field ets_full.py scores,
+via hafs_common.hafs_event_total) is shown as the first panel.
 
 Usage (on Hercules):
     module load miniconda3
@@ -338,7 +337,7 @@ def plot_compare(case, panels, end_fhour, out_path):
 # =============================================================================
 
 def compute_nest_field(case, grid_lat, grid_lon, end_fhour):
-    """Moving-nest running-max APCP on the fixed grid, masked to the swath.
+    """Moving-nest incremental APCP total on the fixed grid, masked to the swath.
 
     Same field ets_full.py scores (hafs_event_total over the storm.atm files).
     Returns None when no nest files are found so the figure can still render
@@ -438,7 +437,7 @@ def generate_parent_figure(case):
     # Moving-nest total on the fixed verification grid (same field ETS
     # scores), masked to the display swath.
     # ------------------------------------------------------------------
-    print("\nAccumulating HAFS nest (storm.atm) running-max APCP ...")
+    print("\nAccumulating HAFS nest (storm.atm) incremental APCP ...")
     grid_lat, grid_lon = case.fixed_grid()
     nest_display = compute_nest_field(case, grid_lat, grid_lon, end_fhour)
 
@@ -448,8 +447,8 @@ def generate_parent_figure(case):
     out_png = case.out_dir / f"parent_qpf_{case.output_slug}.png"
     panels = [
         (grid_lon, grid_lat, nest_display,
-         f"{case.model_label} Nest APCP (moving 2-km, running-max)\n"
-         f"0–{end_fhour}h — can inflate vs swept frontal rain"),
+         f"{case.model_label} Nest APCP (moving 2-km, summed intervals)\n"
+         f"0–{end_fhour}h"),
         (hafs_lons, hafs_lats, hafs_display,
          f"{case.model_label} Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),
         (mrms_lons, mrms_lats, mrms_total,
