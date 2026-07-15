@@ -261,22 +261,6 @@ def cycle_label(ccase, init_dt):
     return f"{init_dt:%m-%d %HZ}\n{lead:.0f} h pre-LF"
 
 
-def _cycle_x_values(ccase, inits):
-    """Return cycle x-values and whether they are landfall-relative."""
-    if ccase.landfall_time is not None:
-        return [hours_before_landfall(ccase, init_dt) for init_dt in inits], True
-    return inits, False
-
-
-def _label_cycle_x_axis(ax, x, inits, use_lead):
-    """Put every analyzed initialization on a readable shared x-axis."""
-    ax.set_xticks(x)
-    if use_lead:
-        ax.set_xticklabels([f"{value:.0f}" for value in x])
-    else:
-        ax.set_xticklabels([init_dt.strftime("%m-%d\n%HZ")
-                            for init_dt in inits])
-
 def cycles_caveat(fields, ccase):
     """Figure-footer caveat describing the Stage IV window (or its absence)."""
     if fields["stage4_win"] is None:
@@ -403,7 +387,7 @@ def plot_maps(ccase, fields, out_path):
 
 
 def plot_ets_leadtime(ccase, results, out_path):
-    """ETS evolution by cycle, faceted so every threshold stays legible."""
+    """ETS heatmap with rainfall thresholds by cycle initialization."""
     _plot_theme()
     rows = [r for r in results
             if r["observation"] == "MRMS" and r["forecast"] == "parent"]
@@ -412,62 +396,69 @@ def plot_ets_leadtime(ccase, results, out_path):
     if not inits or not thresholds:
         raise ValueError("No parent-vs-MRMS ETS rows to plot.")
 
-    x, use_lead = _cycle_x_values(ccase, inits)
     by_init = {r["init_dt"]: {item["threshold"]: item["ets"]
                               for item in r["rows"]}
                for r in rows}
     values = np.asarray(
         [[by_init.get(init_dt, {}).get(threshold, np.nan) for init_dt in inits]
          for threshold in thresholds], dtype=float)
-    finite = values[np.isfinite(values)]
-    ymin = min(-0.02, float(np.nanmin(finite)) - 0.03) if finite.size else -0.02
-    ymax = max(0.35, float(np.nanmax(finite)) + 0.05) if finite.size else 0.35
-    ymax = min(1.0, ymax)
-
-    ncols = min(5, len(thresholds))
-    nrows = int(np.ceil(len(thresholds) / ncols))
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.35 * ncols, 3.15 * nrows),
-                             sharex=True, sharey=True, squeeze=False)
-    flat = axes.ravel()
-    line_color = sns.color_palette("colorblind")[0] if sns is not None else "C0"
-    annotate = len(inits) <= 6
-    for ax, threshold, scores in zip(flat, thresholds, values):
-        ax.plot(x, scores, color=line_color, marker="o", markersize=5,
-                linewidth=2.2)
-        ax.axhline(0.0, color="#666666", linewidth=0.8, alpha=0.65)
-        ax.set_title(f"≥ {threshold:g} mm", fontsize=11, fontweight="bold")
-        ax.set_ylim(ymin, ymax)
-        ax.grid(axis="y", linestyle=":", alpha=0.5)
+    use_lead = ccase.landfall_time is not None
+    xlabels = [cycle_label(ccase, init_dt) for init_dt in inits]
+    ylabels = [f"≥ {threshold:g}" for threshold in thresholds]
+    annotate = values.size <= 80
+    fig, ax = plt.subplots(
+        figsize=(max(8.0, 1.35 * len(inits) + 3.0),
+                 max(4.2, 0.68 * len(thresholds) + 2.4)))
+    if sns is not None:
+        cmap = sns.diverging_palette(240, 15, s=80, l=45, as_cmap=True)
+        ax.set_facecolor("#eceff1")
+        sns.heatmap(
+            values, ax=ax, cmap=cmap, vmin=-0.2, vmax=1.0, center=0.0,
+            mask=~np.isfinite(values), annot=annotate, fmt=".2f",
+            linewidths=0.8, linecolor="white", square=False,
+            xticklabels=xlabels, yticklabels=ylabels,
+            cbar_kws={"label": "Equitable Threat Score (ETS)",
+                      "shrink": 0.88},
+        )
+        for row, col in np.argwhere(~np.isfinite(values)):
+            ax.text(col + 0.5, row + 0.5, "—", ha="center", va="center",
+                    color="#7a7a7a", fontsize=9)
+    else:
+        norm = colors.TwoSlopeNorm(vmin=-0.2, vcenter=0.0, vmax=1.0)
+        image = ax.imshow(values, cmap="RdBu_r", norm=norm, aspect="auto")
+        fig.colorbar(image, ax=ax, label="Equitable Threat Score (ETS)",
+                     shrink=0.88)
+        ax.set_xticks(np.arange(len(inits)), labels=xlabels)
+        ax.set_yticks(np.arange(len(thresholds)), labels=ylabels)
         if annotate:
-            for xpos, score in zip(x, scores):
-                if np.isfinite(score):
-                    ax.annotate(f"{score:.2f}", (xpos, score),
-                                xytext=(0, 6), textcoords="offset points",
-                                ha="center", fontsize=7.5)
-    for ax in flat[len(thresholds):]:
-        ax.set_visible(False)
+            for row, col in np.argwhere(np.isfinite(values)):
+                ax.text(col, row, f"{values[row, col]:.2f}",
+                        ha="center", va="center", fontsize=8)
+        for row, col in np.argwhere(~np.isfinite(values)):
+            ax.text(col, row, "—", ha="center", va="center",
+                    color="#7a7a7a", fontsize=9)
 
-    _label_cycle_x_axis(flat[0], x, inits, use_lead)
     if use_lead:
-        flat[0].invert_xaxis()
-        xlabel = "Initialization lead time to landfall (hours; approaching landfall →)"
+        xlabel = "Forecast initialization (UTC) and lead time to landfall"
         timing = f" | landfall {ccase.landfall_time:%Y-%m-%d %H%MZ}"
     else:
         xlabel = "Forecast initialization (UTC)"
         timing = ""
-    fig.supxlabel(xlabel, fontsize=11)
-    fig.supylabel("Equitable Threat Score (ETS)", fontsize=11)
-    fig.suptitle(
+    ax.set_xlabel(xlabel, labelpad=10)
+    ax.set_ylabel("Rainfall threshold (mm)")
+    ax.tick_params(axis="x", labelrotation=0)
+    ax.tick_params(axis="y", labelrotation=0)
+    ax.set_title(
         f"{ccase.storm_name} — {ccase.model_label} parent ETS evolution\n"
-        f"MRMS verification by rainfall threshold{timing}", fontsize=14)
-    fig.tight_layout(rect=(0.02, 0.04, 1, 0.91))
+        f"MRMS verification by rainfall threshold{timing}", fontsize=14,
+        pad=14)
+    fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
 def plot_fss_leadtime(ccase, fss_rows, out_path):
-    """FSS evolution by cycle with one line per neighborhood scale."""
+    """FSS heatmaps by cycle, faceted across rainfall thresholds."""
     _plot_theme()
     rows = [r for r in fss_rows
             if r["observation"] == "MRMS" and r["forecast"] == "parent"]
@@ -477,43 +468,72 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
     if not inits or not thresholds or not scales:
         raise ValueError("No parent-vs-MRMS FSS rows to plot.")
 
-    x, use_lead = _cycle_x_values(ccase, inits)
-    palette = (sns.color_palette("viridis", len(scales)) if sns is not None
-               else plt.cm.viridis(np.linspace(0.12, 0.88, len(scales))))
-    markers = ("o", "s", "^", "D", "v", "P", "X")
-    fig, axes = plt.subplots(1, len(thresholds),
-                             figsize=(6.4 * len(thresholds), 5.4),
-                             sharex=True, sharey=True, squeeze=False)
-    for ax, threshold in zip(axes[0], thresholds):
+    use_lead = ccase.landfall_time is not None
+    xlabels = [cycle_label(ccase, init_dt) for init_dt in inits]
+    ylabels = [f"{scale:g}" for scale in scales]
+    fig = plt.figure(figsize=(max(7.2, 4.2 * len(thresholds)),
+                              max(4.8, 0.56 * len(scales) + 2.8)))
+    grid = fig.add_gridspec(
+        1, len(thresholds) + 1,
+        width_ratios=[1.0] * len(thresholds) + [0.055], wspace=0.18)
+    axes = [fig.add_subplot(grid[0, index])
+            for index in range(len(thresholds))]
+    cbar_ax = fig.add_subplot(grid[0, -1])
+    annotate = len(inits) * len(scales) <= 72
+    fallback_image = None
+    for index, (ax, threshold) in enumerate(zip(axes, thresholds)):
         lookup = {(r["init_dt"], r["scale_km"]): r["fss"] for r in rows
                   if r["threshold"] == threshold}
-        for index, (scale, color) in enumerate(zip(scales, palette)):
-            scores = [lookup.get((init_dt, scale), np.nan) for init_dt in inits]
-            ax.plot(x, scores, color=color, marker=markers[index % len(markers)],
-                    markersize=5, linewidth=2, label=f"{scale:g} km")
+        values = np.asarray(
+            [[lookup.get((init_dt, scale), np.nan) for init_dt in inits]
+             for scale in scales], dtype=float)
+        if sns is not None:
+            ax.set_facecolor("#eceff1")
+            sns.heatmap(
+                values, ax=ax, cmap="mako", vmin=0.0, vmax=1.0,
+                mask=~np.isfinite(values), annot=annotate, fmt=".2f",
+                linewidths=0.8, linecolor="white", square=False,
+                xticklabels=xlabels, yticklabels=ylabels,
+                cbar=index == len(thresholds) - 1, cbar_ax=cbar_ax,
+                cbar_kws={"label": "Fractions Skill Score (FSS)"},
+            )
+            for row, col in np.argwhere(~np.isfinite(values)):
+                ax.text(col + 0.5, row + 0.5, "—", ha="center",
+                        va="center", color="#7a7a7a", fontsize=9)
+        else:
+            fallback_image = ax.imshow(values, cmap="viridis", vmin=0.0,
+                                       vmax=1.0, aspect="auto")
+            ax.set_xticks(np.arange(len(inits)), labels=xlabels)
+            ax.set_yticks(np.arange(len(scales)), labels=ylabels)
+            if annotate:
+                for row, col in np.argwhere(np.isfinite(values)):
+                    ax.text(col, row, f"{values[row, col]:.2f}",
+                            ha="center", va="center", fontsize=8)
+            for row, col in np.argwhere(~np.isfinite(values)):
+                ax.text(col, row, "—", ha="center", va="center",
+                        color="#7a7a7a", fontsize=9)
         ax.set_title(f"Rainfall ≥ {threshold:g} mm", fontsize=12,
                      fontweight="bold")
-        ax.set_ylim(0.0, 1.0)
-        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.tick_params(axis="x", labelrotation=0)
+        ax.tick_params(axis="y", labelrotation=0)
+    if fallback_image is not None:
+        fig.colorbar(fallback_image, cax=cbar_ax,
+                     label="Fractions Skill Score (FSS)")
 
-    _label_cycle_x_axis(axes[0, 0], x, inits, use_lead)
     if use_lead:
-        axes[0, 0].invert_xaxis()
-        xlabel = "Initialization lead time to landfall (hours; approaching landfall →)"
+        xlabel = "Forecast initialization (UTC) and lead time to landfall"
         timing = f" | landfall {ccase.landfall_time:%Y-%m-%d %H%MZ}"
     else:
         xlabel = "Forecast initialization (UTC)"
         timing = ""
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, title="Neighborhood scale", loc="lower center",
-               ncol=min(len(scales), 6), bbox_to_anchor=(0.5, 0.005),
-               frameon=False)
-    fig.supxlabel(xlabel, y=0.105, fontsize=11)
-    fig.supylabel("Fractions Skill Score (FSS)", fontsize=11)
+    fig.supxlabel(xlabel, y=0.04, fontsize=11)
+    fig.supylabel("Neighborhood scale (km)", x=0.02, fontsize=11)
     fig.suptitle(
         f"{ccase.storm_name} — {ccase.model_label} parent FSS evolution\n"
         f"MRMS verification across neighborhood scales{timing}", fontsize=14)
-    fig.tight_layout(rect=(0.02, 0.16, 1, 0.90))
+    fig.subplots_adjust(left=0.08, right=0.96, bottom=0.17, top=0.80)
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -702,8 +722,7 @@ def compute_cycles(ccase, fields=None):
     print(caveat)
     out_metrics = ccase.out_dir / f"cycles_metrics_{slug}.png"
     out_maps = ccase.out_dir / f"cycles_maps_{slug}.png"
-    # Keep the original filenames for compatibility with existing download and
-    # gallery workflows; the products themselves are now lead-time line plots.
+    # Keep the established filenames for download and gallery compatibility.
     out_ets_leadtime = ccase.out_dir / f"cycles_ets_heatmap_{slug}.png"
     out_fss_leadtime = ccase.out_dir / f"cycles_fss_heatmap_{slug}.png"
     out_errors = ccase.out_dir / f"cycles_errors_{slug}.png"

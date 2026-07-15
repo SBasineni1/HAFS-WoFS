@@ -135,12 +135,12 @@ cycles_errors_<case>_<start>_<end>.png
 cycles_qpf_<case>_<start>_<end>.gif
 ```
 
-The multi-cycle products use only the fixed parent domain. ETS is shown as
-threshold-faceted score evolution toward landfall; FSS uses lead-time curves
-for each neighborhood scale. The suite also includes shared map scales,
-representative parent-minus-MRMS errors, and an animated parent-QPF sequence.
-The ETS/FSS filenames retain `heatmap` for compatibility with existing output
-folders. Set `make_animation: false` to skip the GIF. Optional
+The multi-cycle products use only the fixed parent domain. ETS is shown as a
+Seaborn heatmap of rainfall threshold by initialization; FSS uses one Seaborn
+heatmap per rainfall threshold, with neighborhood scale by initialization.
+The suite also includes shared map scales, representative parent-minus-MRMS
+errors, and an animated parent-QPF sequence. Set `make_animation: false` to
+skip the GIF. Optional
 `fss_thresholds_mm` and `fss_scales_cells` lists control the FSS analysis.
 
 ## Compare HAFS-A and HAFS-B
