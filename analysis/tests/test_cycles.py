@@ -428,8 +428,8 @@ def test_compute_cycles_writes_csv_and_pngs():
         assert csv_path.exists(), "CSV not written"
         assert metrics_png.exists(), "metrics PNG not written"
         assert maps_png.exists(), "maps PNG not written"
-        assert ets_png.exists(), "ETS heatmap not written"
-        assert fss_png.exists(), "FSS heatmap not written"
+        assert ets_png.exists(), "ETS lead-time plot not written"
+        assert fss_png.exists(), "FSS lead-time plot not written"
         assert errors_png.exists(), "error maps not written"
         assert fss_csv.exists(), "FSS CSV not written"
         with open(csv_path) as fh:
