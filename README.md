@@ -24,7 +24,7 @@ conda activate hafs
 ```
 
 The main dependencies are NumPy, SciPy, PyYAML, boto3, cfgrib, ecCodes,
-xarray, Matplotlib, and Cartopy. `environment.yml` is preferred because it
+xarray, Matplotlib, Cartopy, Seaborn, and Pillow. `environment.yml` is preferred because it
 installs the required native GRIB and mapping libraries.
 
 MRMS observations are downloaded anonymously from NOAA's public S3 bucket.
@@ -97,6 +97,7 @@ directories are discovered automatically.
 run_root: /work2/.../helene/HFSA
 valid_start: 2024092600
 valid_end: 2024092800
+landfall_time: 202409270310
 storm_name: Hurricane Helene
 domain: [15.0, 42.0, -100.0, -60.0]
 mask_radius_km: 500
@@ -112,7 +113,8 @@ python analysis/run.py storms/helene_hfsb_cycles.yaml cycles
 
 Only cycles that initialize on or before `valid_start` and extend through
 `valid_end` are included. Use an optional `inits:` list only when automatic
-discovery should be restricted.
+discovery should be restricted. `landfall_time` enables a common "hours before
+landfall" axis; it accepts `YYYYMMDDHH` or `YYYYMMDDHHMM` UTC.
 
 Every surviving cycle is accumulated over the same absolute time window and
 verified against the same MRMS/Stage IV totals. Scores use one shared swath:
@@ -124,12 +126,20 @@ Cycle outputs are:
 
 ```text
 cycles_<case>_<start>_<end>.csv
+cycles_fss_<case>_<start>_<end>.csv
 cycles_metrics_<case>_<start>_<end>.png
 cycles_maps_<case>_<start>_<end>.png
+cycles_ets_heatmap_<case>_<start>_<end>.png
+cycles_fss_heatmap_<case>_<start>_<end>.png
+cycles_errors_<case>_<start>_<end>.png
+cycles_qpf_<case>_<start>_<end>.gif
 ```
 
-The CSV contains parent and nest scores for every initialization. The maps
-show nest QPF for each initialization alongside the shared MRMS total.
+The products combine the visual language of the individual-run and model
+comparison plots: parent/nest line styles, threshold-aware heatmaps, shared map
+scales, representative forecast-minus-MRMS errors, and an animated nest-QPF
+sequence. Set `make_animation: false` to skip the GIF. Optional
+`fss_thresholds_mm` and `fss_scales_cells` lists control the FSS analysis.
 
 ## Compare HAFS-A and HAFS-B
 

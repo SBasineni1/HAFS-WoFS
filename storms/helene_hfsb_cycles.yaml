@@ -3,9 +3,13 @@
 run_root: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSB
 valid_start: 2024092600
 valid_end: 2024092800
+landfall_time: 202409270310  # NHC: Florida Big Bend landfall at 0310 UTC
 storm_name: Hurricane Helene
 domain: [15.0, 42.0, -100.0, -60.0]
 mask_radius_km: 500
 out_dir: analysis/output/helene_hfsb_cycles
 # inits: [2024092400, 2024092412]  # optional override of auto-discovery
 # ets_threshold_mm: 25
+# fss_thresholds_mm: [25, 50]
+# fss_scales_cells: [1, 3, 5, 11, 21, 41]
+# make_animation: true

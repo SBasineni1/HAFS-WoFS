@@ -158,7 +158,8 @@ def build_manifest(configs: list[Path], output_root: Path) -> dict:
         out = output_dir_for(path, cfg)
         files = []
         if out.exists() and _inside(out, output_root):
-            candidates = sorted(p for p in out.iterdir() if p.suffix.lower() in {".png", ".csv"})
+            candidates = sorted(p for p in out.iterdir()
+                                if p.suffix.lower() in {".png", ".gif", ".csv"})
             if kind == "case" and cfg.get("init"):
                 init = str(cfg["init"])
                 slug = path.stem if init in path.stem else f"{path.stem}_{init}"
@@ -179,7 +180,9 @@ def build_manifest(configs: list[Path], output_root: Path) -> dict:
 
     orphan_files = []
     for item in sorted(output_root.rglob("*")):
-        if item.is_file() and item.suffix.lower() in {".png", ".csv"} and item.resolve() not in assigned:
+        if (item.is_file()
+                and item.suffix.lower() in {".png", ".gif", ".csv"}
+                and item.resolve() not in assigned):
             orphan_files.append(_file_record(item, output_root))
     if orphan_files:
         cases.append({
@@ -214,11 +217,11 @@ label{font-size:12px;color:var(--muted);display:grid;gap:4px}select,input{min-wi
 <script>
 let manifest={cases:[]}; const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function options(id,values,label){const e=document.getElementById(id),old=e.value;e.innerHTML=`<option value="">All ${label}</option>`+[...new Set(values.filter(Boolean))].sort().map(v=>`<option>${esc(v)}</option>`).join('');e.value=old}
-function title(name){if(name.startsWith('parent_qpf_'))return'Side-by-side QPF';if(name.startsWith('ets_'))return'ETS';if(name.startsWith('rmse_scatter_'))return'RMSE';if(name.startsWith('cycles_metrics_'))return'Cycle metrics';if(name.startsWith('cycles_maps_'))return'Cycle maps';if(name.startsWith('compare_'))return'Model comparison';return name.replace(/\.png$/,'').replaceAll('_',' ')}
+function title(name){if(name.startsWith('parent_qpf_'))return'Side-by-side QPF';if(name.startsWith('ets_'))return'ETS';if(name.startsWith('rmse_scatter_'))return'RMSE';if(name.startsWith('cycles_metrics_'))return'Cycle metrics';if(name.startsWith('cycles_maps_'))return'Cycle maps';if(name.startsWith('cycles_ets_heatmap_'))return'Cycle ETS heatmap';if(name.startsWith('cycles_fss_heatmap_'))return'Cycle FSS heatmap';if(name.startsWith('cycles_errors_'))return'Cycle error maps';if(name.startsWith('cycles_qpf_'))return'Cycle QPF animation';if(name.startsWith('compare_'))return'Model comparison';return name.replace(/\.(png|gif)$/,'').replaceAll('_',' ')}
 const fileUrl=f=>f.data||('/'+encodeURI(f.url)),imageUrl=f=>f.data||(fileUrl(f)+'?v='+encodeURIComponent(f.modified));
 function render(){options('storm',manifest.cases.map(c=>c.storm),'storms');options('model',manifest.cases.map(c=>c.model),'models');options('init',manifest.cases.map(c=>c.init),'initializations');
  const filters=['storm','model','init'].map(id=>document.getElementById(id).value),q=document.getElementById('search').value.toLowerCase();let shown=0;
- const html=manifest.cases.filter(c=>(!filters[0]||c.storm===filters[0])&&(!filters[1]||c.model===filters[1])&&(!filters[2]||c.init===filters[2])).map(c=>{const pics=c.files.filter(f=>f.name.endsWith('.png')&&(!q||(c.storm+' '+c.model+' '+f.name).toLowerCase().includes(q))),tables=c.files.filter(f=>f.name.endsWith('.csv')&&(!q||f.name.toLowerCase().includes(q)));if(q&&!pics.length&&!tables.length)return'';shown++;
+ const html=manifest.cases.filter(c=>(!filters[0]||c.storm===filters[0])&&(!filters[1]||c.model===filters[1])&&(!filters[2]||c.init===filters[2])).map(c=>{const pics=c.files.filter(f=>(f.name.endsWith('.png')||f.name.endsWith('.gif'))&&(!q||(c.storm+' '+c.model+' '+f.name).toLowerCase().includes(q))),tables=c.files.filter(f=>f.name.endsWith('.csv')&&(!q||f.name.toLowerCase().includes(q)));if(q&&!pics.length&&!tables.length)return'';shown++;
  return `<section class="case"><h2>${esc(c.storm)}</h2><div class="meta">${esc([c.model,c.init,c.kind,c.config].filter(Boolean).join(' · '))}</div>${pics.length?`<div class="grid">${pics.map(f=>`<article class="card"><a href="${fileUrl(f)}" target="_blank"><img src="${imageUrl(f)}" loading="lazy" alt="${esc(title(f.name))}"></a><div class="caption"><a href="${fileUrl(f)}" target="_blank">${esc(title(f.name))}</a><span class="stamp">${esc(f.modified.replace('T',' '))}</span></div></article>`).join('')}</div>`:'<div class="empty">No plots generated yet. Run with <code>--generate missing</code>.</div>'}${tables.length?`<div class="tables">${tables.map(f=>`<a href="${fileUrl(f)}" target="_blank" download="${esc(f.name)}">CSV · ${esc(f.name)}</a>`).join('')}</div>`:''}</section>`}).join('');
  document.getElementById('content').innerHTML=html||'<div class="empty">No matching graphics.</div>';document.getElementById('status').textContent=`${shown} group${shown===1?'':'s'} · updated ${manifest.updated.replace('T',' ')}`}
 async function refresh(){try{const r=await fetch('/api/manifest',{cache:'no-store'});manifest=await r.json();render()}catch(e){document.getElementById('status').textContent='Viewer disconnected'}}

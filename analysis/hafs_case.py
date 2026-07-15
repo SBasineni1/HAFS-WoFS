@@ -5,7 +5,7 @@ tests off-Hercules, away from cfgrib/boto3/eccodes/cartopy.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -335,6 +335,10 @@ class CyclesCase:
     stage4_cache_dir: Path
     inits: list            # explicit YYYYMMDDHH strings, or None to discover
     case_slug: str
+    landfall_time: datetime = None
+    fss_thresholds_mm: list = field(default_factory=lambda: [25.0, 50.0])
+    fss_scales_cells: list = field(default_factory=lambda: [1, 3, 5, 11, 21, 41])
+    make_animation: bool = True
 
     def fixed_grid(self):
         """Fixed lat/lon verification/plot mesh from domain + grid_res."""
@@ -407,6 +411,12 @@ def cycles_from_yaml(yaml_path):
     run_root = Path(cfg["run_root"])
     out_dir = (Path(cfg["out_dir"]) if cfg.get("out_dir")
                else Path("analysis/output") / yaml_path.stem)
+    landfall_raw = cfg.get("landfall_time")
+    landfall_time = None
+    if landfall_raw:
+        value = str(landfall_raw)
+        fmt = "%Y%m%d%H%M" if len(value) == 12 else "%Y%m%d%H"
+        landfall_time = datetime.strptime(value, fmt)
     return CyclesCase(
         run_root=run_root,
         valid_start=valid_start,
@@ -426,6 +436,12 @@ def cycles_from_yaml(yaml_path):
                                       "/tmp/stage4_cache")),
         inits=[str(i) for i in cfg["inits"]] if cfg.get("inits") else None,
         case_slug=yaml_path.stem,
+        landfall_time=landfall_time,
+        fss_thresholds_mm=[float(v) for v in cfg.get(
+            "fss_thresholds_mm", [25.0, 50.0])],
+        fss_scales_cells=[int(v) for v in cfg.get(
+            "fss_scales_cells", [1, 3, 5, 11, 21, 41])],
+        make_animation=bool(cfg.get("make_animation", True)),
     )
 
 

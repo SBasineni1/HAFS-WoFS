@@ -79,6 +79,7 @@ _CYCLES_YAML = """\
 run_root: {root}
 valid_start: 2024092600
 valid_end: 2024092800
+landfall_time: 202409270310
 storm_name: Hurricane Helene
 domain: [15.0, 42.0, -100.0, -60.0]
 mask_radius_km: 500
@@ -93,8 +94,11 @@ def test_cycles_from_yaml_defaults_and_slug():
         cc = cycles_from_yaml(yml)
         assert cc.valid_start == datetime(2024, 9, 26, 0)
         assert cc.valid_end == datetime(2024, 9, 28, 0)
+        assert cc.landfall_time == datetime(2024, 9, 27, 3, 10)
         assert cc.inits is None
         assert cc.ets_threshold_mm == 25.0
+        assert cc.fss_thresholds_mm == [25.0, 50.0]
+        assert cc.fss_scales_cells == [1, 3, 5, 11, 21, 41]
         assert cc.thresholds_mm[0] == 1
         assert cc.case_slug == "helene_hfsa_cycles"
         assert cc.output_slug == "helene_hfsa_cycles_2024092600_2024092800"
@@ -160,6 +164,9 @@ def _tiny_cycles_case(root, out):
         out_dir=Path(out), mrms_cache_dir=Path("/tmp"),
         stage4_cache_dir=Path("/tmp"), inits=None,
         case_slug="testcycles",
+        landfall_time=datetime(2024, 9, 27, 3, 10),
+        fss_thresholds_mm=[1.0], fss_scales_cells=[1, 3],
+        make_animation=False,
     )
 
 
@@ -407,15 +414,24 @@ def test_compute_cycles_writes_csv_and_pngs():
         csv_path = Path(tmp) / f"cycles_{slug}.csv"
         metrics_png = Path(tmp) / f"cycles_metrics_{slug}.png"
         maps_png = Path(tmp) / f"cycles_maps_{slug}.png"
+        ets_png = Path(tmp) / f"cycles_ets_heatmap_{slug}.png"
+        fss_png = Path(tmp) / f"cycles_fss_heatmap_{slug}.png"
+        errors_png = Path(tmp) / f"cycles_errors_{slug}.png"
+        fss_csv = Path(tmp) / f"cycles_fss_{slug}.csv"
         assert csv_path.exists(), "CSV not written"
         assert metrics_png.exists(), "metrics PNG not written"
         assert maps_png.exists(), "maps PNG not written"
+        assert ets_png.exists(), "ETS heatmap not written"
+        assert fss_png.exists(), "FSS heatmap not written"
+        assert errors_png.exists(), "error maps not written"
+        assert fss_csv.exists(), "FSS CSV not written"
         with open(csv_path) as fh:
             rows = list(csvmod.DictReader(fh))
         # 2 cycles x 2 forecasts x 1 obs (Stage IV None) x 1 threshold.
         assert len(rows) == 4
         assert rows[0].keys() == {
-            "init", "forecast", "observation", "threshold", "n", "rmse",
+            "init", "lead_hours_to_landfall", "forecast", "observation",
+            "threshold", "n", "rmse",
             "mae", "bias_mm", "r", "a", "b", "c", "d", "ets", "bias",
             "pod", "far", "csi", "hss"}
         by_key = {(r["init"], r["forecast"]): r for r in rows}
@@ -432,6 +448,15 @@ def test_compute_cycles_writes_csv_and_pngs():
         assert int(early_nest["n"]) == 16
         # Perfect >= 1mm coverage everywhere -> ETS-relevant counts: all hits.
         assert int(early_nest["a"]) == 16 and int(early_nest["c"]) == 0
+
+
+def test_animate_cycle_qpf_writes_gif():
+    from cycles import animate_cycle_qpf
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "cycles.gif"
+        animate_cycle_qpf(_tiny_cycles_case(tmp, tmp),
+                          _tiny_cycle_fields(), output)
+        assert output.exists() and output.stat().st_size > 0
 
 
 def _run_all():

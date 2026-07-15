@@ -17,3 +17,5 @@ dependencies:
   - xarray
   - matplotlib
   - cartopy
+  - seaborn
+  - pillow

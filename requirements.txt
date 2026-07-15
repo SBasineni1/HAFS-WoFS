@@ -11,3 +11,5 @@ eccodes
 xarray
 matplotlib
 cartopy
+seaborn
+pillow

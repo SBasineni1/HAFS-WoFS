@@ -35,14 +35,18 @@ def test_manifest_groups_case_files_and_orphans():
             "init": 2025010100, "out_dir": str(case_out),
         }))
         (case_out / "ets_full_alpha_hfsa_2025010100.png").write_bytes(b"png")
+        (case_out / "cycles_qpf_alpha.gif").write_bytes(b"gif")
         (output / "loose.png").write_bytes(b"png")
 
         manifest = viewer.build_manifest([cfg_path], output)
         case = manifest["cases"][0]
         assert case["storm"] == "Alpha"
         assert case["model"] == "HAFS-A"
-        assert case["files"][0]["name"].startswith("ets_full_")
+        assert {item["name"] for item in case["files"]} == {
+            "ets_full_alpha_hfsa_2025010100.png"}
         assert manifest["cases"][1]["id"] == "other_graphics"
+        assert {item["name"] for item in manifest["cases"][1]["files"]} == {
+            "cycles_qpf_alpha.gif", "loose.png"}
 
 
 def test_discover_configs_filters_by_stem():
