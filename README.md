@@ -135,10 +135,9 @@ cycles_errors_<case>_<start>_<end>.png
 cycles_qpf_<case>_<start>_<end>.gif
 ```
 
-The products combine the visual language of the individual-run and model
-comparison plots: parent/nest line styles, threshold-aware heatmaps, shared map
-scales, representative forecast-minus-MRMS errors, and an animated nest-QPF
-sequence. Set `make_animation: false` to skip the GIF. Optional
+The multi-cycle products use only the fixed parent domain: threshold-aware
+heatmaps, shared map scales, representative parent-minus-MRMS errors, and an
+animated parent-QPF sequence. Set `make_animation: false` to skip the GIF. Optional
 `fss_thresholds_mm` and `fss_scales_cells` lists control the FSS analysis.
 
 ## Compare HAFS-A and HAFS-B

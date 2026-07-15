@@ -4,9 +4,10 @@ common valid window against the same observations over a shared
 union-of-tracks footprint, so the only thing changing between cycles is
 lead time.
 
-Produces landfall-relative metric curves, QPF small multiples, ETS/FSS
-heatmaps, representative spatial-error maps, an animated QPF sequence, and
-long-format categorical/continuous and FSS CSVs.
+Uses the fixed parent domain exclusively. Produces landfall-relative metric
+curves, QPF small multiples, ETS/FSS heatmaps, representative spatial-error
+maps, an animated QPF sequence, and long-format categorical/continuous and
+FSS CSVs.
 
 Usage (on Hercules):
     module load miniconda3
@@ -36,8 +37,7 @@ except ImportError:  # Optional at runtime; matplotlib remains a supported fallb
     sns = None
 
 from hafs_common import (
-    QPF_LEVELS, discover_files, hafs_event_total, haversine_km,
-    read_hafs_tp_records,
+    QPF_LEVELS, discover_files, haversine_km, read_hafs_tp_records,
 )
 from hafs_case import (
     cycles_from_yaml, cycle_storm_case, discover_inits, window_hours,
@@ -77,42 +77,8 @@ def union_swath(track_points, radius_km, grid_lat, grid_lon):
 
 
 # =============================================================================
-# Windowed forecast fields
+# Windowed parent forecast fields
 # =============================================================================
-
-def filter_window_pairs(file_pairs, f1, f2):
-    """Nest (fhour, path) pairs whose bucket falls inside (f1, f2].
-
-    Each storm.atm file's per-interval bucket ENDS at its fhour, so files
-    with f1 < fhour <= f2 together hold exactly the window's rain.
-    """
-    return [(h, p) for h, p in file_pairs if f1 < h <= f2]
-
-
-def nest_window_total(case, f1, f2, grid_lat, grid_lon):
-    """Nest QPF accumulated over window hours (f1, f2] on the fixed mesh.
-
-    Sums the per-interval buckets exactly as hafs_event_total does for the
-    full event (its incremental mode). Raises RuntimeError when the window
-    has no nest files or per-interval buckets. Accumulated-mode differencing
-    is intentionally not implemented because nest cumulative records are a
-    geographic trap on the moving nest (see pick_total_record, which never
-    selects them); these windows raise RuntimeError so build_cycle_fields
-    skips the cycle with a printed reason rather than silently scoring zeros.
-    """
-    file_pairs = discover_files(case.run_dir, case.storm_glob(),
-                                case.fhours_filter)
-    window_pairs = filter_window_pairs(file_pairs, f1, f2)
-    if not window_pairs:
-        raise RuntimeError(
-            f"no nest files in f{f1:03d}-f{f2:03d} for init {case.init_str}")
-    total, mode = hafs_event_total(window_pairs, grid_lat, grid_lon)
-    if mode != "incremental":
-        raise RuntimeError(
-            f"no per-interval APCP buckets in f{f1:03d}-f{f2:03d} for init "
-            f"{case.init_str} (mode={mode!r}) — nest cumulative records are "
-            "not usable on the moving nest")
-    return total
 
 
 def parent_window_total(case, f1, f2, grid_lat, grid_lon):
@@ -175,8 +141,8 @@ def build_cycle_fields(ccase):
 
     Returns a dict: grid_lat, grid_lon, mrms_win, stage4_win (None when
     Stage IV is unavailable), s4_label, swath (shared union mask), and
-    cycles — a list of dicts {init_str, init_dt, f1, f2, nest_win,
-    parent_win}, one per surviving cycle. Raises RuntimeError when no
+    cycles — a list of dicts {init_str, init_dt, f1, f2, parent_win}, one per
+    surviving cycle. Raises RuntimeError when no
     cycle is eligible or every eligible cycle fails field extraction.
     """
     init_strs = ccase.inits or discover_inits(ccase.run_root)
@@ -200,10 +166,10 @@ def build_cycle_fields(ccase):
         except (FileNotFoundError, ValueError) as e:
             print(f"  skip {init_str}: {e}")
             continue
-        file_pairs = discover_files(case.run_dir, case.storm_glob(), None)
+        file_pairs = discover_files(case.run_dir, case.parent_glob(), None)
         if not file_pairs:
-            print(f"  skip {init_str}: no nest files matching "
-                  f"{case.storm_glob()}")
+            print(f"  skip {init_str}: no parent files matching "
+                  f"{case.parent_glob()}")
             continue
         max_fhour = file_pairs[-1][0]
         ok, reason = cycle_eligibility(case.init_dt, max_fhour,
@@ -226,15 +192,13 @@ def build_cycle_fields(ccase):
                               ccase.valid_end)
         print(f"\nCycle {case.init_str} (window f{f1:03d}-f{f2:03d})")
         try:
-            nest_win = nest_window_total(case, f1, f2, grid_lat, grid_lon)
             parent_win = parent_window_total(case, f1, f2,
                                              grid_lat, grid_lon)
         except RuntimeError as e:
             print(f"  skip {case.init_str}: {e}")
             continue
         cycles.append(dict(init_str=case.init_str, init_dt=case.init_dt,
-                           f1=f1, f2=f2, nest_win=nest_win,
-                           parent_win=parent_win))
+                           f1=f1, f2=f2, parent_win=parent_win))
         survivors.append(case)
     if not cycles:
         raise RuntimeError("Every eligible cycle failed field extraction.")
@@ -403,12 +367,12 @@ def plot_metrics(ccase, results, out_path, caveat=""):
 
 
 def plot_maps(ccase, fields, out_path):
-    """Small-multiple nest-QPF maps per cycle + observed MRMS panel.
+    """Small-multiple parent-QPF maps per cycle + observed MRMS panel.
 
     Shared color scale and extent; the union verification swath is
     outlined on every panel. Wraps at 4 columns.
     """
-    panels = [(cycle_label(ccase, c["init_dt"]), c["nest_win"])
+    panels = [(cycle_label(ccase, c["init_dt"]), c["parent_win"])
               for c in fields["cycles"]]
     panels.append(("MRMS observed", fields["mrms_win"]))
     n = len(panels)
@@ -442,7 +406,7 @@ def plot_maps(ccase, fields, out_path):
         fig.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
                      ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
     fig.suptitle(
-        f"{ccase.storm_name} — {ccase.model_label} nest QPF by "
+        f"{ccase.storm_name} — {ccase.model_label} parent QPF by "
         f"initialization\nvalid {ccase.valid_start:%Y-%m-%d %HZ} – "
         f"{ccase.valid_end:%Y-%m-%d %HZ} | swath outline "
         f"≤{ccase.mask_radius_km:.0f} km", y=1.02)
@@ -451,12 +415,12 @@ def plot_maps(ccase, fields, out_path):
 
 
 def plot_ets_heatmaps(ccase, results, out_path):
-    """ETS across all thresholds and cycles, faceted by parent/nest."""
+    """Parent-domain ETS across all thresholds and cycles."""
     _plot_theme()
     rows = [r for r in results if r["observation"] == "MRMS"]
     inits = sorted({r["init_dt"] for r in rows})
     thresholds = sorted({item["threshold"] for r in rows for item in r["rows"]})
-    forecasts = [name for name in ("parent", "nest")
+    forecasts = [name for name in ("parent",)
                  if any(r["forecast"] == name for r in rows)]
     matrices = []
     for forecast in forecasts:
@@ -495,7 +459,7 @@ def plot_fss_heatmaps(ccase, fss_rows, out_path):
     _plot_theme()
     inits = sorted({r["init_dt"] for r in fss_rows})
     thresholds = sorted({r["threshold"] for r in fss_rows})
-    forecasts = [name for name in ("parent", "nest")
+    forecasts = [name for name in ("parent",)
                  if any(r["forecast"] == name for r in fss_rows)]
     scales = sorted({r["scale_km"] for r in fss_rows})
     fig, axes = plt.subplots(len(forecasts), len(thresholds),
@@ -534,39 +498,32 @@ def _map_context(ax, ccase):
 
 
 def plot_error_maps(ccase, fields, out_path):
-    """Parent/nest minus MRMS for representative early, middle, late cycles."""
+    """Parent minus MRMS for representative early, middle, late cycles."""
     cycles_data = fields["cycles"]
     indices = sorted(set((0, len(cycles_data) // 2, len(cycles_data) - 1)))
     selected = [cycles_data[index] for index in indices]
-    errors = []
-    for cycle in selected:
-        errors.extend([cycle["parent_win"] - fields["mrms_win"],
-                       cycle["nest_win"] - fields["mrms_win"]])
+    errors = [cycle["parent_win"] - fields["mrms_win"]
+              for cycle in selected]
     finite = np.concatenate([field[np.isfinite(field)] for field in errors
                              if np.isfinite(field).any()])
     limit = max(25.0, float(np.nanpercentile(np.abs(finite), 98)))
     norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
     fig, axes = plt.subplots(
-        2, len(selected), figsize=(5.3 * len(selected), 8.2), squeeze=False,
+        1, len(selected), figsize=(5.3 * len(selected), 4.8), squeeze=False,
         subplot_kw={"projection": ccrs.PlateCarree()})
     mesh = None
     for col, cycle in enumerate(selected):
-        for row, (forecast, field) in enumerate((
-                ("parent", cycle["parent_win"]),
-                ("nest", cycle["nest_win"]))):
-            ax = axes[row, col]
-            _map_context(ax, ccase)
-            error = np.where(fields["swath"], field - fields["mrms_win"],
-                             np.nan)
-            mesh = ax.pcolormesh(fields["grid_lon"], fields["grid_lat"], error,
-                                 cmap="RdBu_r", norm=norm, shading="auto",
-                                 transform=ccrs.PlateCarree())
-            ax.contour(fields["grid_lon"], fields["grid_lat"],
-                       fields["swath"].astype(float), levels=[0.5],
-                       colors="#333333", linewidths=0.7,
-                       transform=ccrs.PlateCarree())
-            ax.set_title(f"{forecast.title()} · "
-                         f"{cycle_label(ccase, cycle['init_dt'])}")
+        ax = axes[0, col]
+        _map_context(ax, ccase)
+        error = np.where(fields["swath"], errors[col], np.nan)
+        mesh = ax.pcolormesh(fields["grid_lon"], fields["grid_lat"], error,
+                             cmap="RdBu_r", norm=norm, shading="auto",
+                             transform=ccrs.PlateCarree())
+        ax.contour(fields["grid_lon"], fields["grid_lat"],
+                   fields["swath"].astype(float), levels=[0.5],
+                   colors="#333333", linewidths=0.7,
+                   transform=ccrs.PlateCarree())
+        ax.set_title(cycle_label(ccase, cycle["init_dt"]))
     fig.colorbar(mesh, ax=axes, shrink=0.82, pad=0.02,
                  label="Forecast − MRMS (mm)")
     fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} representative "
@@ -576,9 +533,10 @@ def plot_error_maps(ccase, fields, out_path):
 
 
 def animate_cycle_qpf(ccase, fields, out_path):
-    """Animate nest QPF, MRMS, and their difference across initializations."""
+    """Animate parent QPF, MRMS, and their difference across initializations."""
     cycles_data = fields["cycles"]
-    errors = [cycle["nest_win"] - fields["mrms_win"] for cycle in cycles_data]
+    errors = [cycle["parent_win"] - fields["mrms_win"]
+              for cycle in cycles_data]
     finite = np.concatenate([field[np.isfinite(field)] for field in errors
                              if np.isfinite(field).any()])
     limit = max(25.0, float(np.nanpercentile(np.abs(finite), 98)))
@@ -596,9 +554,9 @@ def animate_cycle_qpf(ccase, fields, out_path):
 
     def update(frame):
         cycle = cycles_data[frame]
-        panels = ((cycle["nest_win"], qpf_cmap_obj, qpf_norm, "Nest forecast"),
+        panels = ((cycle["parent_win"], qpf_cmap_obj, qpf_norm, "Parent forecast"),
                   (fields["mrms_win"], qpf_cmap_obj, qpf_norm, "MRMS observed"),
-                  (errors[frame], "RdBu_r", error_norm, "Nest − MRMS"))
+                  (errors[frame], "RdBu_r", error_norm, "Parent − MRMS"))
         for ax, (data, cmap, norm, title) in zip(axes, panels):
             ax.clear()
             _map_context(ax, ccase)
@@ -638,8 +596,7 @@ def compute_cycles(ccase, fields=None):
     fss_rows = []
     print("\n" + "=" * 84)
     for cyc in fields["cycles"]:
-        for fname, fgrid in (("parent", cyc["parent_win"]),
-                             ("nest", cyc["nest_win"])):
+        for fname, fgrid in (("parent", cyc["parent_win"]),):
             for oname, ogrid in observations:
                 fcst, obs = valid_points(fgrid, ogrid, swath)
                 cont = continuous_scores(fcst, obs)

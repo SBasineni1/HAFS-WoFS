@@ -280,16 +280,8 @@ def test_stage4_label():
 
 
 # ---------------------------------------------------------------------------
-# Windowed forecast fields + union swath (Task 3)
+# Windowed parent fields + union swath (Task 3)
 # ---------------------------------------------------------------------------
-
-def test_filter_window_pairs_boundaries():
-    from cycles import filter_window_pairs
-    pairs = [(h, Path(f"f{h:03d}")) for h in (42, 48, 51, 90, 96, 99)]
-    kept = filter_window_pairs(pairs, 48, 96)
-    # f1 exclusive (a bucket ENDING at 48 holds pre-window rain),
-    # f2 inclusive (the bucket ending at 96 is the window's last rain).
-    assert [h for h, _ in kept] == [51, 90, 96]
 
 
 def test_parent_window_total_memoizes_cumulative_fields():
@@ -339,26 +331,6 @@ def test_parent_window_total_memoizes_cumulative_fields():
     assert np.allclose(w3, 6.0)
 
 
-def test_nest_window_total_rejects_cumulative_records():
-    import cycles
-
-    case = _stub_case(Path("."))
-    orig_discover_files = cycles.discover_files
-    orig_hafs_event_total = cycles.hafs_event_total
-    cycles.discover_files = lambda *args: [(96, Path("f096"))]
-    cycles.hafs_event_total = lambda *args: (np.zeros((2, 2)), "cumulative")
-    try:
-        try:
-            cycles.nest_window_total(case, 48, 96,
-                                     np.zeros((2, 2)), np.zeros((2, 2)))
-            assert False, "expected RuntimeError"
-        except RuntimeError as e:
-            assert "no per-interval" in str(e)
-    finally:
-        cycles.discover_files = orig_discover_files
-        cycles.hafs_event_total = orig_hafs_event_total
-
-
 def test_union_swath_is_union_of_single_masks():
     from cycles import union_swath
     glat, glon = np.meshgrid(np.linspace(0, 10, 21),
@@ -371,6 +343,41 @@ def test_union_swath_is_union_of_single_masks():
     assert m_a.any() and m_b.any()
     assert not (m_a & m_b).any()          # disjoint circles at 150 km
     assert np.array_equal(m_ab, m_a | m_b)
+
+
+def test_build_cycle_fields_requires_parent_not_nest():
+    """A cycle with parent files is eligible even when no nest files exist."""
+    import cycles
+
+    ccase = _tiny_cycles_case("/tmp", "/tmp")
+    ccase.inits = ["2024092400"]
+    case = _stub_case("/tmp")
+    grid = np.zeros(ccase.fixed_grid()[0].shape)
+    seen_globs = []
+
+    def fake_discover(run_dir, glob, fhours):
+        seen_globs.append(glob)
+        return [(96, Path("parent.f096.grb2"))]
+
+    saved = (cycles.cycle_storm_case, cycles.discover_files,
+             cycles.parent_window_total, cycles.build_mrms_total_window,
+             cycles.stage4_total_window)
+    cycles.cycle_storm_case = lambda *args: case
+    cycles.discover_files = fake_discover
+    cycles.parent_window_total = lambda *args: np.ones_like(grid)
+    cycles.build_mrms_total_window = lambda *args: np.zeros_like(grid)
+    cycles.stage4_total_window = lambda *args: (None, None, None, None)
+    try:
+        fields = cycles.build_cycle_fields(ccase)
+    finally:
+        (cycles.cycle_storm_case, cycles.discover_files,
+         cycles.parent_window_total, cycles.build_mrms_total_window,
+         cycles.stage4_total_window) = saved
+
+    assert len(fields["cycles"]) == 1
+    assert "parent_win" in fields["cycles"][0]
+    assert "nest_win" not in fields["cycles"][0]
+    assert seen_globs and all("parent.atm" in glob for glob in seen_globs)
 
 
 def test_window_track_points_hourly_inclusive():
@@ -397,9 +404,9 @@ def _tiny_cycle_fields():
         swath=np.ones((4, 4), dtype=bool),
         cycles=[
             dict(init_str="2024092400", init_dt=datetime(2024, 9, 24, 0),
-                 f1=48, f2=96, nest_win=obs + 2.0, parent_win=obs - 1.0),
+                 f1=48, f2=96, parent_win=obs - 1.0),
             dict(init_str="2024092500", init_dt=datetime(2024, 9, 25, 0),
-                 f1=24, f2=72, nest_win=obs.copy(), parent_win=obs.copy()),
+                 f1=24, f2=72, parent_win=obs.copy()),
         ],
     )
 
@@ -427,27 +434,25 @@ def test_compute_cycles_writes_csv_and_pngs():
         assert fss_csv.exists(), "FSS CSV not written"
         with open(csv_path) as fh:
             rows = list(csvmod.DictReader(fh))
-        # 2 cycles x 2 forecasts x 1 obs (Stage IV None) x 1 threshold.
-        assert len(rows) == 4
+        # 2 cycles x parent forecast x 1 obs (Stage IV None) x 1 threshold.
+        assert len(rows) == 2
         assert rows[0].keys() == {
             "init", "lead_hours_to_landfall", "forecast", "observation",
             "threshold", "n", "rmse",
             "mae", "bias_mm", "r", "a", "b", "c", "d", "ets", "bias",
             "pod", "far", "csi", "hss"}
         by_key = {(r["init"], r["forecast"]): r for r in rows}
-        early_nest = by_key[("2024092400", "nest")]
         early_parent = by_key[("2024092400", "parent")]
-        late_nest = by_key[("2024092500", "nest")]
+        late_parent = by_key[("2024092500", "parent")]
         assert all(r["observation"] == "MRMS" for r in rows)
+        assert all(r["forecast"] == "parent" for r in rows)
         # Constant offsets: rmse == |bias_mm| (positive bias = over-forecast).
-        assert abs(float(early_nest["rmse"]) - 2.0) < 1e-9
-        assert abs(float(early_nest["bias_mm"]) - 2.0) < 1e-9
         assert abs(float(early_parent["rmse"]) - 1.0) < 1e-9
         assert abs(float(early_parent["bias_mm"]) - (-1.0)) < 1e-9
-        assert abs(float(late_nest["rmse"]) - 0.0) < 1e-9
-        assert int(early_nest["n"]) == 16
+        assert abs(float(late_parent["rmse"]) - 0.0) < 1e-9
+        assert int(early_parent["n"]) == 16
         # Perfect >= 1mm coverage everywhere -> ETS-relevant counts: all hits.
-        assert int(early_nest["a"]) == 16 and int(early_nest["c"]) == 0
+        assert int(early_parent["a"]) == 16 and int(early_parent["c"]) == 0
 
 
 def test_animate_cycle_qpf_writes_gif():
