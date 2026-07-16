@@ -1,8 +1,7 @@
 """
-Cycle comparison for HAFS QPF: score every initialization of one storm on a
-common valid window against the same observations over a shared
-union-of-tracks footprint, so the only thing changing between cycles is
-lead time.
+Cycle comparison for HAFS QPF: score every initialization through a common
+valid end. Cycles initialized after the configured start use an init-clipped
+window and matching observations over a shared union-of-tracks footprint.
 
 Uses the fixed parent domain exclusively. Produces landfall-relative metric
 curves, QPF small multiples, ETS/FSS lead-time plots, representative
@@ -139,10 +138,8 @@ def parent_window_total(case, f1, f2, grid_lat, grid_lon):
 def build_cycle_fields(ccase):
     """Build everything the cycles product scores and plots.
 
-    Returns a dict: grid_lat, grid_lon, mrms_win, stage4_win (None when
-    Stage IV is unavailable), s4_label, swath (shared union mask), and
-    cycles — a list of dicts {init_str, init_dt, f1, f2, parent_win}, one per
-    surviving cycle. Raises RuntimeError when no
+    Each cycle contains its effective valid_start, the common valid_end, and
+    matching parent, MRMS, and optional Stage IV accumulations. Raises when no
     cycle is eligible or every eligible cycle fails field extraction.
     """
     init_strs = ccase.inits or discover_inits(ccase.run_root)
@@ -158,7 +155,7 @@ def build_cycle_fields(ccase):
     print(f"Fixed grid: {grid_lat.shape[0]}x{grid_lat.shape[1]} "
           f"@ {ccase.grid_res}deg")
 
-    # Pass 1: load cases; keep only cycles that fully cover the window.
+    # Pass 1: load cases; keep cycles that reach the common window end.
     cases = []
     for init_str in init_strs:
         try:
@@ -188,9 +185,11 @@ def build_cycle_fields(ccase):
     cycles = []
     survivors = []
     for case in cases:
-        f1, f2 = window_hours(case.init_dt, ccase.valid_start,
+        effective_start = max(ccase.valid_start, case.init_dt)
+        f1, f2 = window_hours(case.init_dt, effective_start,
                               ccase.valid_end)
-        print(f"\nCycle {case.init_str} (window f{f1:03d}-f{f2:03d})")
+        print(f"\nCycle {case.init_str} (valid {effective_start:%Y-%m-%d %HZ}"
+              f" -> {ccase.valid_end:%Y-%m-%d %HZ}; f{f1:03d}-f{f2:03d})")
         try:
             parent_win = parent_window_total(case, f1, f2,
                                              grid_lat, grid_lon)
@@ -198,6 +197,8 @@ def build_cycle_fields(ccase):
             print(f"  skip {case.init_str}: {e}")
             continue
         cycles.append(dict(init_str=case.init_str, init_dt=case.init_dt,
+                           valid_start=effective_start,
+                           valid_end=ccase.valid_end,
                            f1=f1, f2=f2, parent_win=parent_win))
         survivors.append(case)
     if not cycles:
@@ -206,32 +207,41 @@ def build_cycle_fields(ccase):
     # Shared footprint: union of every surviving cycle's in-window track.
     print("Union verification swath ...")
     all_pts = []
-    for case in survivors:
-        all_pts.extend(window_track_points(case, ccase.valid_start,
-                                           ccase.valid_end))
+    for case, cycle in zip(survivors, cycles):
+        all_pts.extend(window_track_points(case, cycle["valid_start"],
+                                           cycle["valid_end"]))
     swath = union_swath(all_pts, ccase.mask_radius_km, grid_lat, grid_lon)
     print(f"  swath: {int(swath.sum()):,} grid points from "
           f"{len(survivors)} track(s)")
 
-    # Shared observations (absolute-time, computed once for all cycles).
-    print("MRMS window total ...")
-    mrms_win = build_mrms_total_window(ccase.valid_start, ccase.valid_end,
-                                       ccase.mrms_cache_dir,
-                                       grid_lat, grid_lon)
-    print("Stage IV window total ...")
-    s4_lat, s4_lon, s4_native, s4_label = stage4_total_window(
-        ccase.stage4_cache_dir, ccase.valid_start, ccase.valid_end,
-        all_pts, ccase.display_radius_km)
-    if s4_native is None:
-        stage4_win, s4_label = None, "unavailable"
-        print("  Stage IV unavailable — scoring MRMS only.")
-    else:
-        stage4_win = regrid_2d_to_fixed(s4_lat, s4_lon, s4_native,
-                                        grid_lat, grid_lon)
+    # Matching observations for each init-clipped forecast window.
+    for case, cycle in zip(survivors, cycles):
+        start, end = cycle["valid_start"], cycle["valid_end"]
+        print(f"MRMS total for {case.init_str}: {start:%m-%d %HZ} -> "
+              f"{end:%m-%d %HZ} ...")
+        cycle["mrms_win"] = build_mrms_total_window(
+            start, end, ccase.mrms_cache_dir, grid_lat, grid_lon)
+        points = window_track_points(case, start, end)
+        print(f"Stage IV total for {case.init_str} ...")
+        s4_lat, s4_lon, s4_native, s4_label = stage4_total_window(
+            ccase.stage4_cache_dir, start, end, points,
+            ccase.display_radius_km)
+        if s4_native is None:
+            cycle["stage4_win"], cycle["s4_label"] = None, "unavailable"
+        else:
+            cycle["stage4_win"] = regrid_2d_to_fixed(
+                s4_lat, s4_lon, s4_native, grid_lat, grid_lon)
+            cycle["s4_label"] = s4_label
 
-    return dict(grid_lat=grid_lat, grid_lon=grid_lon, mrms_win=mrms_win,
-                stage4_win=stage4_win, s4_label=s4_label, swath=swath,
-                cycles=cycles)
+    if all(cycle["stage4_win"] is None for cycle in cycles):
+        print("  Stage IV unavailable — scoring MRMS only.")
+    # Retain representative top-level observation keys for compatibility with
+    # callers that display the earliest cycle's fields.
+    first = cycles[0]
+    return dict(grid_lat=grid_lat, grid_lon=grid_lon,
+                mrms_win=first["mrms_win"],
+                stage4_win=first["stage4_win"],
+                s4_label=first["s4_label"], swath=swath, cycles=cycles)
 
 
 # =============================================================================
@@ -266,13 +276,29 @@ def cycle_label(ccase, init_dt):
     return f"{init_dt:%m-%d %HZ}\n{lead:.0f} h pre-LF"
 
 
+def cycle_window_label(cycle):
+    """Compact effective accumulation window for a cycle panel."""
+    start = cycle.get("valid_start")
+    end = cycle.get("valid_end")
+    if start is None or end is None:
+        return ""
+    return f"{start:%m-%d %HZ}–{end:%m-%d %HZ}"
+
+
+def _cycle_observation(cycle, fields, name):
+    """Get a per-cycle observation with legacy top-level fallback."""
+    key = "mrms_win" if name == "MRMS" else "stage4_win"
+    return cycle.get(key, fields.get(key))
+
+
 def cycles_caveat(fields, ccase):
     """Figure-footer caveat describing the Stage IV window (or its absence)."""
-    if fields["stage4_win"] is None:
+    if not any(_cycle_observation(cycle, fields, "Stage IV") is not None
+               for cycle in fields["cycles"]):
         return "Stage IV unavailable — not scored."
     return (f"Stage IV: CONUS-only, 24h 12Z–12Z files summed over touched "
-            f"days ({fields['s4_label']}) — window approximates "
-            f"{ccase.valid_start:%m-%d %HZ}–{ccase.valid_end:%m-%d %HZ}.")
+            f"days; later initializations use init-clipped windows ending "
+            f"{ccase.valid_end:%m-%d %HZ}.")
 
 
 def plot_metrics(ccase, results, out_path, caveat=""):
@@ -333,8 +359,8 @@ def plot_metrics(ccase, results, out_path, caveat=""):
         landfall_text = ""
     fig.suptitle(
         f"{ccase.storm_name} — {ccase.model_label} QPF by initialization\n"
-        f"valid {ccase.valid_start:%Y-%m-%d %HZ} – "
-        f"{ccase.valid_end:%Y-%m-%d %HZ} | union TC swath "
+        f"start = later of {ccase.valid_start:%Y-%m-%d %HZ} or init; "
+        f"end = {ccase.valid_end:%Y-%m-%d %HZ} | union TC swath "
         f"≤{ccase.mask_radius_km:.0f} km{landfall_text}")
     if caveat:
         fig.text(0.5, -0.01, caveat, ha="center", fontsize=8, color="#555")
@@ -349,9 +375,11 @@ def plot_maps(ccase, fields, out_path):
     Shared color scale and extent; the union verification swath is
     outlined on every panel. Wraps at 4 columns.
     """
-    panels = [(cycle_label(ccase, c["init_dt"]), c["parent_win"])
+    panels = [(f"{cycle_label(ccase, c['init_dt'])}\n"
+               f"{cycle_window_label(c)}", c["parent_win"])
               for c in fields["cycles"]]
-    panels.append(("MRMS observed", fields["mrms_win"]))
+    panels.append((f"MRMS observed\n{cycle_window_label(fields['cycles'][0])}",
+                   _cycle_observation(fields["cycles"][0], fields, "MRMS")))
     n = len(panels)
     ncols = min(4, n)
     nrows = int(np.ceil(n / ncols))
@@ -384,7 +412,8 @@ def plot_maps(ccase, fields, out_path):
                      ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
     fig.suptitle(
         f"{ccase.storm_name} — {ccase.model_label} parent QPF by "
-        f"initialization\nvalid {ccase.valid_start:%Y-%m-%d %HZ} – "
+        f"initialization\naccumulations begin at the later of "
+        f"{ccase.valid_start:%Y-%m-%d %HZ} or initialization and end "
         f"{ccase.valid_end:%Y-%m-%d %HZ} | swath outline "
         f"≤{ccase.mask_radius_km:.0f} km", y=1.02)
     fig.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
@@ -540,8 +569,8 @@ def plot_ets_threshold_bars(ccase, results, out_path):
     ax.legend(frameon=False, loc="upper right")
     ax.set_title(
         f"{ccase.storm_name} - {ccase.model_label} parent rainfall skill\n"
-        f"Pooled ETS across {n_cycles} forecast cycles vs MRMS | valid "
-        f"{ccase.valid_start:%Y-%m-%d %HZ} - {ccase.valid_end:%Y-%m-%d %HZ}",
+        f"Pooled ETS across {n_cycles} forecast cycles vs MRMS | "
+        f"init-clipped windows ending {ccase.valid_end:%Y-%m-%d %HZ}",
         fontsize=13, pad=12)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -642,7 +671,8 @@ def plot_error_maps(ccase, fields, out_path):
     cycles_data = fields["cycles"]
     indices = sorted(set((0, len(cycles_data) // 2, len(cycles_data) - 1)))
     selected = [cycles_data[index] for index in indices]
-    errors = [cycle["parent_win"] - fields["mrms_win"]
+    errors = [cycle["parent_win"]
+              - _cycle_observation(cycle, fields, "MRMS")
               for cycle in selected]
     finite = np.concatenate([field[np.isfinite(field)] for field in errors
                              if np.isfinite(field).any()])
@@ -663,7 +693,8 @@ def plot_error_maps(ccase, fields, out_path):
                    fields["swath"].astype(float), levels=[0.5],
                    colors="#333333", linewidths=0.7,
                    transform=ccrs.PlateCarree())
-        ax.set_title(cycle_label(ccase, cycle["init_dt"]))
+        ax.set_title(f"{cycle_label(ccase, cycle['init_dt'])}\n"
+                     f"{cycle_window_label(cycle)}")
     fig.colorbar(mesh, ax=axes, shrink=0.82, pad=0.02,
                  label="Forecast − MRMS (mm)")
     fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} representative "
@@ -675,7 +706,8 @@ def plot_error_maps(ccase, fields, out_path):
 def animate_cycle_qpf(ccase, fields, out_path):
     """Animate parent QPF, MRMS, and their difference across initializations."""
     cycles_data = fields["cycles"]
-    errors = [cycle["parent_win"] - fields["mrms_win"]
+    errors = [cycle["parent_win"]
+              - _cycle_observation(cycle, fields, "MRMS")
               for cycle in cycles_data]
     finite = np.concatenate([field[np.isfinite(field)] for field in errors
                              if np.isfinite(field).any()])
@@ -694,8 +726,9 @@ def animate_cycle_qpf(ccase, fields, out_path):
 
     def update(frame):
         cycle = cycles_data[frame]
+        mrms_win = _cycle_observation(cycle, fields, "MRMS")
         panels = ((cycle["parent_win"], qpf_cmap_obj, qpf_norm, "Parent forecast"),
-                  (fields["mrms_win"], qpf_cmap_obj, qpf_norm, "MRMS observed"),
+                  (mrms_win, qpf_cmap_obj, qpf_norm, "MRMS observed"),
                   (errors[frame], "RdBu_r", error_norm, "Parent − MRMS"))
         for ax, (data, cmap, norm, title) in zip(axes, panels):
             ax.clear()
@@ -710,7 +743,8 @@ def animate_cycle_qpf(ccase, fields, out_path):
                        transform=projection)
             ax.set_title(title)
         fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} · "
-                     f"{cycle_label(ccase, cycle['init_dt']).replace(chr(10), ' · ')}")
+                     f"{cycle_label(ccase, cycle['init_dt']).replace(chr(10), ' · ')}"
+                     f" · {cycle_window_label(cycle)}")
         return axes
 
     movie = animation.FuncAnimation(fig, update, frames=len(cycles_data),
@@ -723,10 +757,6 @@ def compute_cycles(ccase, fields=None):
     if fields is None:
         fields = build_cycle_fields(ccase)
     swath = fields["swath"]
-    observations = [("MRMS", fields["mrms_win"])]
-    if fields["stage4_win"] is not None:
-        observations.append(("Stage IV", fields["stage4_win"]))
-
     # Make sure the headline ETS threshold is actually scored.
     thresholds = list(ccase.thresholds_mm)
     if ccase.ets_threshold_mm not in thresholds:
@@ -738,6 +768,10 @@ def compute_cycles(ccase, fields=None):
     fss_rows = []
     print("\n" + "=" * 84)
     for cyc in fields["cycles"]:
+        observations = [("MRMS", _cycle_observation(cyc, fields, "MRMS"))]
+        stage4_win = _cycle_observation(cyc, fields, "Stage IV")
+        if stage4_win is not None:
+            observations.append(("Stage IV", stage4_win))
         for fname, fgrid in (("parent", cyc["parent_win"]),):
             for oname, ogrid in observations:
                 fcst, obs = valid_points(fgrid, ogrid, swath)
@@ -746,6 +780,10 @@ def compute_cycles(ccase, fields=None):
                         for thr in thresholds]
                 results.append(dict(init_str=cyc["init_str"],
                                     init_dt=cyc["init_dt"],
+                                    valid_start=cyc.get("valid_start",
+                                                        ccase.valid_start),
+                                    valid_end=cyc.get("valid_end",
+                                                      ccase.valid_end),
                                     forecast=fname, observation=oname,
                                     cont=cont, rows=rows))
                 print(f"{cyc['init_str']} {fname:>7} vs {oname:<9} "
@@ -780,7 +818,8 @@ def compute_cycles(ccase, fields=None):
     slug = ccase.output_slug
     out_csv = ccase.out_dir / f"cycles_{slug}.csv"
 
-    fieldnames = ["init", "lead_hours_to_landfall", "forecast",
+    fieldnames = ["init", "valid_start", "valid_end",
+                  "lead_hours_to_landfall", "forecast",
                   "observation", "threshold", "n",
                   "rmse", "mae", "bias_mm", "r", "a", "b", "c", "d",
                   "ets", "bias", "pod", "far", "csi", "hss"]
@@ -791,6 +830,10 @@ def compute_cycles(ccase, fields=None):
             cont = res["cont"]
             for r in res["rows"]:
                 w.writerow({"init": res["init_str"],
+                            "valid_start": res["valid_start"].strftime(
+                                "%Y%m%d%H"),
+                            "valid_end": res["valid_end"].strftime(
+                                "%Y%m%d%H"),
                             "lead_hours_to_landfall": hours_before_landfall(
                                 ccase, res["init_dt"]),
                             "forecast": res["forecast"],

@@ -111,16 +111,18 @@ python analysis/run.py storms/helene_hfsa_cycles.yaml cycles
 python analysis/run.py storms/helene_hfsb_cycles.yaml cycles
 ```
 
-Only cycles that initialize on or before `valid_start` and extend through
-`valid_end` are included. Use an optional `inits:` list only when automatic
-discovery should be restricted. `landfall_time` enables a common "hours before
-landfall" axis; it accepts `YYYYMMDDHH` or `YYYYMMDDHHMM` UTC.
+Cycles initialized before `valid_start` accumulate from `valid_start`; later
+cycles accumulate from their initialization. Every cycle must extend through
+the common `valid_end` and is verified against MRMS/Stage IV accumulated over
+its matching interval. The output CSV records each cycle's effective start and
+end. Use an optional `inits:` list only when automatic discovery should be
+restricted. `landfall_time` enables a common "hours before landfall" axis; it
+accepts `YYYYMMDDHH` or `YYYYMMDDHHMM` UTC.
 
-Every surviving cycle is accumulated over the same absolute time window and
-verified against the same MRMS/Stage IV totals. Scores use one shared swath:
-the union of all surviving forecast-track positions during the valid window.
-This prevents changing accumulation periods or footprints from masquerading
-as changes in forecast skill.
+Scores use one shared spatial swath: the union of all surviving forecast-track
+positions within their effective windows. Because later initializations use
+shorter accumulation periods, interpret cycle-to-cycle changes together with
+the recorded valid window.
 
 Cycle outputs are:
 

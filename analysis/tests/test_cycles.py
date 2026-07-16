@@ -39,9 +39,12 @@ def test_cycle_eligibility():
     vs, ve = datetime(2024, 9, 26, 0), datetime(2024, 9, 28, 0)
     ok, reason = cycle_eligibility(datetime(2024, 9, 24, 0), 126, vs, ve)
     assert ok and reason == ""
-    # Init after window start -> ineligible.
+    # Init after window start is eligible and will use an init-clipped window.
     ok, reason = cycle_eligibility(datetime(2024, 9, 26, 6), 126, vs, ve)
-    assert not ok and "after the window start" in reason
+    assert ok and reason == ""
+    # An init at the common end has no verification period.
+    ok, reason = cycle_eligibility(ve, 126, vs, ve)
+    assert not ok and "at or after the window end" in reason
     # Run too short to reach window end -> ineligible.
     ok, reason = cycle_eligibility(datetime(2024, 9, 24, 0), 36, vs, ve)
     assert not ok and "before the window end" in reason
@@ -382,6 +385,49 @@ def test_build_cycle_fields_requires_parent_not_nest():
     assert seen_globs and all("parent.atm" in glob for glob in seen_globs)
 
 
+def test_build_cycle_fields_clips_late_cycle_to_initialization():
+    import dataclasses
+    import cycles
+
+    ccase = _tiny_cycles_case("/tmp", "/tmp")
+    ccase.inits = ["2024092606"]
+    case = dataclasses.replace(
+        _stub_case("/tmp"), init_dt=datetime(2024, 9, 26, 6),
+        init_str="2024092606")
+    grid = np.zeros(ccase.fixed_grid()[0].shape)
+    calls = {}
+
+    saved = (cycles.cycle_storm_case, cycles.discover_files,
+             cycles.parent_window_total, cycles.build_mrms_total_window,
+             cycles.stage4_total_window)
+    cycles.cycle_storm_case = lambda *args: case
+    cycles.discover_files = lambda *args: [(42, Path("parent.f042.grb2"))]
+
+    def fake_parent(case, f1, f2, *args):
+        calls["forecast_hours"] = (f1, f2)
+        return np.ones_like(grid)
+
+    def fake_mrms(start, end, *args):
+        calls["obs_window"] = (start, end)
+        return np.zeros_like(grid)
+
+    cycles.parent_window_total = fake_parent
+    cycles.build_mrms_total_window = fake_mrms
+    cycles.stage4_total_window = lambda *args: (None, None, None, None)
+    try:
+        fields = cycles.build_cycle_fields(ccase)
+    finally:
+        (cycles.cycle_storm_case, cycles.discover_files,
+         cycles.parent_window_total, cycles.build_mrms_total_window,
+         cycles.stage4_total_window) = saved
+
+    cycle = fields["cycles"][0]
+    assert cycle["valid_start"] == datetime(2024, 9, 26, 6)
+    assert cycle["valid_end"] == datetime(2024, 9, 28, 0)
+    assert calls["forecast_hours"] == (0, 42)
+    assert calls["obs_window"] == (cycle["valid_start"], cycle["valid_end"])
+
+
 def test_window_track_points_hourly_inclusive():
     from cycles import window_track_points
     case = _stub_case(Path("."))
@@ -441,13 +487,16 @@ def test_compute_cycles_writes_csv_and_pngs():
         # 2 cycles x parent forecast x 1 obs (Stage IV None) x 1 threshold.
         assert len(rows) == 2
         assert rows[0].keys() == {
-            "init", "lead_hours_to_landfall", "forecast", "observation",
+            "init", "valid_start", "valid_end", "lead_hours_to_landfall",
+            "forecast", "observation",
             "threshold", "n", "rmse",
             "mae", "bias_mm", "r", "a", "b", "c", "d", "ets", "bias",
             "pod", "far", "csi", "hss"}
         by_key = {(r["init"], r["forecast"]): r for r in rows}
         early_parent = by_key[("2024092400", "parent")]
         late_parent = by_key[("2024092500", "parent")]
+        assert early_parent["valid_start"] == "2024092600"
+        assert early_parent["valid_end"] == "2024092800"
         assert all(r["observation"] == "MRMS" for r in rows)
         assert all(r["forecast"] == "parent" for r in rows)
         # Constant offsets: rmse == |bias_mm| (positive bias = over-forecast).

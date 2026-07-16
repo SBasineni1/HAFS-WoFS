@@ -371,17 +371,21 @@ def discover_inits(run_root):
 
 
 def window_hours(init_dt, valid_start, valid_end):
-    """(f1, f2): the common valid window as forecast hours of one cycle."""
+    """Express an absolute valid window as forecast hours of one cycle."""
     f1 = (valid_start - init_dt).total_seconds() / 3600.0
     f2 = (valid_end - init_dt).total_seconds() / 3600.0
     return int(round(f1)), int(round(f2))
 
 
 def cycle_eligibility(init_dt, max_fhour, valid_start, valid_end):
-    """(eligible, reason). Eligible iff the run fully covers the window."""
-    if init_dt > valid_start:
-        return False, (f"init {init_dt:%Y-%m-%d %HZ} is after the window "
-                       f"start {valid_start:%Y-%m-%d %HZ}")
+    """Eligibility for an init-clipped window ending at ``valid_end``.
+
+    Cycles initialized after ``valid_start`` begin verification at their own
+    initialization time. Every retained run must still reach the common end.
+    """
+    if init_dt >= valid_end:
+        return False, (f"init {init_dt:%Y-%m-%d %HZ} is at or after the window "
+                       f"end {valid_end:%Y-%m-%d %HZ}")
     run_end = init_dt + timedelta(hours=max_fhour)
     if run_end < valid_end:
         return False, (f"run ends {run_end:%Y-%m-%d %HZ}, before the "
