@@ -146,8 +146,20 @@ and pools contingency counts across cycles before calculating ETS. The suite
 also includes shared map scales, representative parent-minus-MRMS errors, and
 an animated parent-QPF sequence. Set `make_animation: false` to skip the GIF.
 Optional `ets_bar_thresholds_in`,
-`fss_thresholds_mm` and `fss_scales_cells` lists control the bar-chart and FSS
+`fss_thresholds_in` and `fss_scales_cells` lists control the bar-chart and FSS
 thresholds/scales.
+
+To compare the cycle tables from HAFS-A, HAFS-B, and HAFS-M, run:
+
+```bash
+python3 analysis/run.py storms/helene_cycles_compare.yaml cycles-compare
+```
+
+This creates grouped ETS bars and a scale-dependent FSS comparison in
+`analysis/output/helene_cycles_compare`. A configured model without cycle
+CSVs—currently HAFS-M—is retained in the legend as “awaiting data.” After its
+files arrive, update `storms/helene_hfsm_cycles.yaml`, run that model's
+`cycles` command, and rerun `cycles-compare`.
 
 ## Compare HAFS-A and HAFS-B
 

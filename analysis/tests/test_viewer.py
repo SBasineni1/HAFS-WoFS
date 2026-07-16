@@ -19,6 +19,11 @@ def test_config_kind_and_expected_files():
         "ets_full_helene_2024092400.png",
         "rmse_scatter_helene_2024092400.png",
     ]
+    comparison = {"models": [
+        {"name": "HAFS-A", "cycles_yaml": "a.yaml"},
+        {"name": "HAFS-M", "cycles_yaml": "m.yaml"},
+    ]}
+    assert viewer.config_kind(comparison) == "cycles-compare"
 
 
 def test_manifest_groups_case_files_and_orphans():

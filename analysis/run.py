@@ -1,12 +1,13 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|ets|rmse|cycles|all|compare|replot]
+    python analysis/run.py <case.yaml> [parent|ets|rmse|cycles|cycles-compare|all|compare|replot]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
   parent  nest + parent QPF vs MRMS + Stage IV 4-panel figure
   ets     the combined parent+nest ETS-vs-threshold figure + CSV
   rmse    storm-total RMSE/MAE/bias/r scatter panels + CSV
   cycles  per-initialization comparison on a common valid window (takes a cycles YAML)
+  cycles-compare compare HAFS-A/B/M cycle CSVs; missing models are allowed
   all     parent + ets + rmse (fields built once; default)
   compare HFSA-vs-HFSB rainfall comparison (takes a comparison YAML)
   replot  redraw the comparison figures from existing CSVs (no recompute)
@@ -17,13 +18,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-COMMANDS = ("parent", "ets", "rmse", "cycles", "all", "compare", "replot")
+COMMANDS = ("parent", "ets", "rmse", "cycles", "cycles-compare", "all",
+            "compare", "replot")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
-        print("usage: run.py <case.yaml> [parent|ets|rmse|cycles|all|compare|replot]")
+        print("usage: run.py <case.yaml> "
+              "[parent|ets|rmse|cycles|cycles-compare|all|compare|replot]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -53,6 +56,11 @@ def dispatch(case, command):
 
 def main(argv):
     yaml_path, command = parse_args(argv)
+    if command == "cycles-compare":
+        from cycles_compare import (load_cycles_comparison,
+                                    generate_cycles_comparison)
+        generate_cycles_comparison(load_cycles_comparison(yaml_path))
+        return
     if command in ("compare", "replot"):
         from compare import (load_comparison, generate_comparison,
                              replot_from_csv)

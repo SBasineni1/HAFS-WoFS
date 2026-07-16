@@ -384,7 +384,9 @@ def plot_maps(ccase, fields, out_path):
     ncols = min(4, n)
     nrows = int(np.ceil(n / ncols))
     lat_min, lat_max, lon_min, lon_max = ccase.domain
-    cmap, norm = qpf_cmap()
+    cmap, _ = qpf_cmap()
+    levels_in = np.asarray(QPF_LEVELS, dtype=float) / 25.4
+    norm = colors.BoundaryNorm(levels_in, cmap.N)
     grid_lat, grid_lon = fields["grid_lat"], fields["grid_lon"]
 
     fig, axes = plt.subplots(
@@ -398,8 +400,8 @@ def plot_maps(ccase, fields, out_path):
         ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
         ax.add_feature(cfeature.STATES, linewidth=0.5, edgecolor="gray")
         cf = ax.contourf(grid_lon, grid_lat,
-                         np.nan_to_num(data, nan=0.0),
-                         levels=QPF_LEVELS, cmap=cmap, norm=norm,
+                         np.nan_to_num(data / 25.4, nan=0.0),
+                         levels=levels_in, cmap=cmap, norm=norm,
                          transform=ccrs.PlateCarree(), extend="max")
         ax.contour(grid_lon, grid_lat, fields["swath"].astype(float),
                    levels=[0.5], colors="k", linewidths=1.0,
@@ -408,8 +410,9 @@ def plot_maps(ccase, fields, out_path):
     for ax in flat[n:]:
         ax.set_visible(False)
     if cf is not None:
-        fig.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
-                     ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
+        fig.colorbar(cf, ax=axes, label="Accumulated precipitation (inches)",
+                     ticks=levels_in[::2], shrink=0.7, fraction=0.02,
+                     format="%g")
     fig.suptitle(
         f"{ccase.storm_name} — {ccase.model_label} parent QPF by "
         f"initialization\naccumulations begin at the later of "
@@ -535,12 +538,13 @@ def plot_ets_threshold_bars(ccase, results, out_path):
 
     x = np.arange(len(summary))
     values = np.asarray([row["ets"] for row in summary], dtype=float)
-    color = (sns.color_palette("colorblind")[0]
-             if sns is not None else "#1f77b4")
-    fig, ax = plt.subplots(figsize=(11.5, 5.8))
+    palette = (sns.color_palette("crest", len(summary)) if sns is not None
+               else plt.cm.viridis(np.linspace(0.25, 0.85, len(summary))))
+    fig, ax = plt.subplots(figsize=(12.2, 6.2))
+    fig.patch.set_facecolor("#f7f9fb")
+    ax.set_facecolor("#f7f9fb")
     bars = ax.bar(x, np.nan_to_num(values, nan=0.0), width=0.72,
-                  color=color, edgecolor="white", linewidth=0.8,
-                  label=f"{ccase.model_label} parent")
+                  color=palette, edgecolor="white", linewidth=1.0)
 
     finite = values[np.isfinite(values)]
     ymin = min(-0.05, float(finite.min()) - 0.04) if finite.size else -0.05
@@ -565,13 +569,17 @@ def plot_ets_threshold_bars(ccase, results, out_path):
     ax.set_xticks(x, [f"{row['threshold_in']:g}" for row in summary])
     ax.set_xlabel("Rainfall accumulation threshold (inches)")
     ax.set_ylabel("Equitable Threat Score (ETS)")
-    ax.grid(axis="y", linestyle=":", alpha=0.45)
-    ax.legend(frameon=False, loc="upper right")
+    ax.grid(axis="y", linestyle="-", linewidth=0.7, alpha=0.18)
+    ax.set_axisbelow(True)
+    ax.spines[["top", "right", "left"]].set_visible(False)
+    ax.tick_params(axis="y", length=0)
     ax.set_title(
-        f"{ccase.storm_name} - {ccase.model_label} parent rainfall skill\n"
+        f"{ccase.storm_name} · {ccase.model_label} parent rainfall skill\n"
         f"Pooled ETS across {n_cycles} forecast cycles vs MRMS | "
         f"init-clipped windows ending {ccase.valid_end:%Y-%m-%d %HZ}",
-        fontsize=13, pad=12)
+        fontsize=14, fontweight="semibold", pad=15, loc="left")
+    ax.text(1.0, 1.015, "Higher is better", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=9, color="#607080")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -583,15 +591,20 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
     rows = [r for r in fss_rows
             if r["observation"] == "MRMS" and r["forecast"] == "parent"]
     inits = sorted({r["init_dt"] for r in rows})
-    thresholds = sorted({r["threshold"] for r in rows})
+    thresholds = sorted({r.get("threshold_in", r["threshold"] / 25.4)
+                         for r in rows})
     scales = sorted({r["scale_km"] for r in rows})
     if not inits or not thresholds or not scales:
         raise ValueError("No parent-vs-MRMS FSS rows to plot.")
 
     use_lead = ccase.landfall_time is not None
-    xlabels = [cycle_label(ccase, init_dt) for init_dt in inits]
+    # A label for every six-hourly cycle is unreadable once the suite reaches
+    # ten-plus initializations. Keep every other label while retaining every
+    # heatmap column.
+    xlabels = [f"{init_dt:%m-%d}\n{init_dt:%HZ}" if index % 2 == 0 else ""
+               for index, init_dt in enumerate(inits)]
     ylabels = [f"{scale:g}" for scale in scales]
-    fig = plt.figure(figsize=(max(7.2, 4.2 * len(thresholds)),
+    fig = plt.figure(figsize=(max(11.5, 0.72 * len(inits) + 4.5),
                               max(4.8, 0.56 * len(scales) + 2.8)))
     grid = fig.add_gridspec(
         1, len(thresholds) + 1,
@@ -603,7 +616,8 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
     fallback_image = None
     for index, (ax, threshold) in enumerate(zip(axes, thresholds)):
         lookup = {(r["init_dt"], r["scale_km"]): r["fss"] for r in rows
-                  if r["threshold"] == threshold}
+                  if np.isclose(r.get("threshold_in",
+                                      r["threshold"] / 25.4), threshold)}
         values = np.asarray(
             [[lookup.get((init_dt, scale), np.nan) for init_dt in inits]
              for scale in scales], dtype=float)
@@ -613,7 +627,8 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
                 values, ax=ax, cmap="mako", vmin=0.0, vmax=1.0,
                 mask=~np.isfinite(values), annot=annotate, fmt=".2f",
                 linewidths=0.8, linecolor="white", square=False,
-                xticklabels=xlabels, yticklabels=ylabels,
+                xticklabels=xlabels,
+                yticklabels=ylabels if index == 0 else False,
                 cbar=index == len(thresholds) - 1, cbar_ax=cbar_ax,
                 cbar_kws={"label": "Fractions Skill Score (FSS)"},
             )
@@ -632,18 +647,19 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
             for row, col in np.argwhere(~np.isfinite(values)):
                 ax.text(col, row, "—", ha="center", va="center",
                         color="#7a7a7a", fontsize=9)
-        ax.set_title(f"Rainfall ≥ {threshold:g} mm", fontsize=12,
+        unit = "inch" if np.isclose(threshold, 1.0) else "inches"
+        ax.set_title(f"Rainfall ≥ {threshold:g} {unit}", fontsize=12,
                      fontweight="bold")
         ax.set_xlabel("")
         ax.set_ylabel("")
-        ax.tick_params(axis="x", labelrotation=0)
-        ax.tick_params(axis="y", labelrotation=0)
+        ax.tick_params(axis="x", labelrotation=0, labelsize=8, pad=4)
+        ax.tick_params(axis="y", labelrotation=0, labelsize=9)
     if fallback_image is not None:
         fig.colorbar(fallback_image, cax=cbar_ax,
                      label="Fractions Skill Score (FSS)")
 
     if use_lead:
-        xlabel = "Forecast initialization (UTC) and lead time to landfall"
+        xlabel = "Forecast initialization (UTC)"
         timing = f" | landfall {ccase.landfall_time:%Y-%m-%d %H%MZ}"
     else:
         xlabel = "Forecast initialization (UTC)"
@@ -653,7 +669,8 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
     fig.suptitle(
         f"{ccase.storm_name} — {ccase.model_label} parent FSS evolution\n"
         f"MRMS verification across neighborhood scales{timing}", fontsize=14)
-    fig.subplots_adjust(left=0.08, right=0.96, bottom=0.17, top=0.80)
+    fig.subplots_adjust(left=0.09, right=0.95, bottom=0.20, top=0.80,
+                        wspace=0.10)
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -671,12 +688,12 @@ def plot_error_maps(ccase, fields, out_path):
     cycles_data = fields["cycles"]
     indices = sorted(set((0, len(cycles_data) // 2, len(cycles_data) - 1)))
     selected = [cycles_data[index] for index in indices]
-    errors = [cycle["parent_win"]
-              - _cycle_observation(cycle, fields, "MRMS")
+    errors = [(cycle["parent_win"]
+              - _cycle_observation(cycle, fields, "MRMS")) / 25.4
               for cycle in selected]
     finite = np.concatenate([field[np.isfinite(field)] for field in errors
                              if np.isfinite(field).any()])
-    limit = max(25.0, float(np.nanpercentile(np.abs(finite), 98)))
+    limit = max(1.0, float(np.nanpercentile(np.abs(finite), 98)))
     norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
     fig, axes = plt.subplots(
         1, len(selected), figsize=(5.3 * len(selected), 4.8), squeeze=False,
@@ -696,7 +713,7 @@ def plot_error_maps(ccase, fields, out_path):
         ax.set_title(f"{cycle_label(ccase, cycle['init_dt'])}\n"
                      f"{cycle_window_label(cycle)}")
     fig.colorbar(mesh, ax=axes, shrink=0.82, pad=0.02,
-                 label="Forecast − MRMS (mm)")
+                 label="Forecast − MRMS (inches)")
     fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} representative "
                  "cycle errors", fontsize=13)
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
@@ -706,29 +723,31 @@ def plot_error_maps(ccase, fields, out_path):
 def animate_cycle_qpf(ccase, fields, out_path):
     """Animate parent QPF, MRMS, and their difference across initializations."""
     cycles_data = fields["cycles"]
-    errors = [cycle["parent_win"]
-              - _cycle_observation(cycle, fields, "MRMS")
+    errors = [(cycle["parent_win"]
+              - _cycle_observation(cycle, fields, "MRMS")) / 25.4
               for cycle in cycles_data]
     finite = np.concatenate([field[np.isfinite(field)] for field in errors
                              if np.isfinite(field).any()])
-    limit = max(25.0, float(np.nanpercentile(np.abs(finite), 98)))
+    limit = max(1.0, float(np.nanpercentile(np.abs(finite), 98)))
     error_norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
-    qpf_cmap_obj, qpf_norm = qpf_cmap()
+    qpf_cmap_obj, _ = qpf_cmap()
+    qpf_norm = colors.BoundaryNorm(
+        np.asarray(QPF_LEVELS, dtype=float) / 25.4, qpf_cmap_obj.N)
     projection = ccrs.PlateCarree()
     fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.2),
                              subplot_kw={"projection": projection})
     qpf_map = plt.cm.ScalarMappable(norm=qpf_norm, cmap=qpf_cmap_obj)
     err_map = plt.cm.ScalarMappable(norm=error_norm, cmap="RdBu_r")
     fig.colorbar(qpf_map, ax=axes[:2], shrink=0.72, pad=0.02,
-                 label="Accumulated precipitation (mm)")
+                 label="Accumulated precipitation (inches)")
     fig.colorbar(err_map, ax=axes[2], shrink=0.72, pad=0.02,
-                 label="Forecast − MRMS (mm)")
+                 label="Forecast − MRMS (inches)")
 
     def update(frame):
         cycle = cycles_data[frame]
         mrms_win = _cycle_observation(cycle, fields, "MRMS")
-        panels = ((cycle["parent_win"], qpf_cmap_obj, qpf_norm, "Parent forecast"),
-                  (mrms_win, qpf_cmap_obj, qpf_norm, "MRMS observed"),
+        panels = ((cycle["parent_win"] / 25.4, qpf_cmap_obj, qpf_norm, "Parent forecast"),
+                  (mrms_win / 25.4, qpf_cmap_obj, qpf_norm, "MRMS observed"),
                   (errors[frame], "RdBu_r", error_norm, "Parent − MRMS"))
         for ax, (data, cmap, norm, title) in zip(axes, panels):
             ax.clear()
@@ -795,7 +814,8 @@ def compute_cycles(ccase, fields=None):
                              & np.isfinite(ogrid))
                     clean_fcst = np.nan_to_num(fgrid, nan=0.0)
                     clean_obs = np.nan_to_num(ogrid, nan=0.0)
-                    for threshold in ccase.fss_thresholds_mm:
+                    for threshold_in in ccase.fss_thresholds_in:
+                        threshold = _inches_to_mm(threshold_in)
                         for scale in ccase.fss_scales_cells:
                             fss_rows.append({
                                 "init": cyc["init_str"],
@@ -805,6 +825,7 @@ def compute_cycles(ccase, fields=None):
                                 "forecast": fname,
                                 "observation": oname,
                                 "threshold": threshold,
+                                "threshold_in": threshold_in,
                                 "scale_cells": scale,
                                 "scale_km": round(
                                     scale * ccase.grid_res * 111.0, 1),
@@ -846,7 +867,7 @@ def compute_cycles(ccase, fields=None):
     out_fss_csv = ccase.out_dir / f"cycles_fss_{slug}.csv"
     with open(out_fss_csv, "w", newline="") as fh:
         fieldnames = ["init", "lead_hours_to_landfall", "forecast",
-                      "observation", "threshold", "scale_cells",
+                      "observation", "threshold", "threshold_in", "scale_cells",
                       "scale_km", "fss"]
         writer = csv.DictWriter(fh, fieldnames=fieldnames,
                                 extrasaction="ignore")

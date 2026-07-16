@@ -338,7 +338,7 @@ class CyclesCase:
     landfall_time: datetime = None
     ets_bar_thresholds_in: list = field(
         default_factory=lambda: list(range(2, 25, 2)))
-    fss_thresholds_mm: list = field(default_factory=lambda: [25.0, 50.0])
+    fss_thresholds_in: list = field(default_factory=lambda: [1.0, 2.0])
     fss_scales_cells: list = field(default_factory=lambda: [1, 3, 5, 11, 21, 41])
     make_animation: bool = True
 
@@ -445,8 +445,10 @@ def cycles_from_yaml(yaml_path):
         landfall_time=landfall_time,
         ets_bar_thresholds_in=[float(v) for v in cfg.get(
             "ets_bar_thresholds_in", list(range(2, 25, 2)))],
-        fss_thresholds_mm=[float(v) for v in cfg.get(
-            "fss_thresholds_mm", [25.0, 50.0])],
+        fss_thresholds_in=[float(v) for v in cfg.get(
+            "fss_thresholds_in",
+            [float(v) / 25.4 for v in cfg["fss_thresholds_mm"]]
+            if "fss_thresholds_mm" in cfg else [1.0, 2.0])],
         fss_scales_cells=[int(v) for v in cfg.get(
             "fss_scales_cells", [1, 3, 5, 11, 21, 41])],
         make_animation=bool(cfg.get("make_animation", True)),

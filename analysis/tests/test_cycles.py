@@ -101,7 +101,7 @@ def test_cycles_from_yaml_defaults_and_slug():
         assert cc.inits is None
         assert cc.ets_threshold_mm == 25.0
         assert cc.ets_bar_thresholds_in == list(range(2, 25, 2))
-        assert cc.fss_thresholds_mm == [25.0, 50.0]
+        assert cc.fss_thresholds_in == [1.0, 2.0]
         assert cc.fss_scales_cells == [1, 3, 5, 11, 21, 41]
         assert cc.thresholds_mm[0] == 1
         assert cc.case_slug == "helene_hfsa_cycles"
@@ -170,7 +170,7 @@ def _tiny_cycles_case(root, out):
         case_slug="testcycles",
         landfall_time=datetime(2024, 9, 27, 3, 10),
         ets_bar_thresholds_in=[1.0 / 25.4],
-        fss_thresholds_mm=[1.0], fss_scales_cells=[1, 3],
+        fss_thresholds_in=[1.0 / 25.4], fss_scales_cells=[1, 3],
         make_animation=False,
     )
 

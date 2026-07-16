@@ -41,6 +41,12 @@ def test_parse_args_accepts_cycles():
     assert command == "cycles"
 
 
+def test_parse_args_accepts_cycles_compare():
+    yaml_path, command = parse_args(["compare.yaml", "cycles-compare"])
+    assert yaml_path == "compare.yaml"
+    assert command == "cycles-compare"
+
+
 def _run_all():
     """Discover and run all test_* functions."""
     import inspect

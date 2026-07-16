@@ -55,6 +55,10 @@ def config_kind(cfg: dict) -> str:
         return "cycles"
     if "cases" in cfg:
         return "compare"
+    if isinstance(cfg.get("models"), list) and all(
+            isinstance(item, dict) and "cycles_yaml" in item
+            for item in cfg["models"]):
+        return "cycles-compare"
     return "unknown"
 
 
@@ -113,8 +117,12 @@ def generate(configs: list[Path], mode: str) -> list[tuple[Path, int]]:
     for path in configs:
         cfg = read_config(path)
         kind = config_kind(cfg)
+        if cfg.get("data_available") is False:
+            print(f"Skipping {path.stem}: data_available is false")
+            continue
         command = {"case": "all", "cycles": "cycles",
-                   "compare": "compare"}.get(kind)
+                   "compare": "compare",
+                   "cycles-compare": "cycles-compare"}.get(kind)
         if command is None or (mode == "missing" and not needs_generation(path, cfg)):
             continue
         print(f"\n--- Generating {path.stem} ({command}) ---", flush=True)
@@ -217,7 +225,7 @@ label{font-size:12px;color:var(--muted);display:grid;gap:4px}select,input{min-wi
 <script>
 let manifest={cases:[]}; const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function options(id,values,label){const e=document.getElementById(id),old=e.value;e.innerHTML=`<option value="">All ${label}</option>`+[...new Set(values.filter(Boolean))].sort().map(v=>`<option>${esc(v)}</option>`).join('');e.value=old}
-function title(name){if(name.startsWith('parent_qpf_'))return'Side-by-side QPF';if(name.startsWith('ets_'))return'ETS';if(name.startsWith('rmse_scatter_'))return'RMSE';if(name.startsWith('cycles_metrics_'))return'Cycle metrics';if(name.startsWith('cycles_maps_'))return'Cycle maps';if(name.startsWith('cycles_ets_heatmap_'))return'Cycle ETS heatmap';if(name.startsWith('cycles_ets_bars_'))return'Model ETS by rainfall threshold';if(name.startsWith('cycles_fss_heatmap_'))return'Cycle FSS heatmap';if(name.startsWith('cycles_errors_'))return'Cycle error maps';if(name.startsWith('cycles_qpf_'))return'Cycle QPF animation';if(name.startsWith('compare_'))return'Model comparison';return name.replace(/\.(png|gif)$/,'').replaceAll('_',' ')}
+function title(name){if(name.startsWith('parent_qpf_'))return'Side-by-side QPF';if(name.startsWith('ets_'))return'ETS';if(name.startsWith('rmse_scatter_'))return'RMSE';if(name.startsWith('cycles_compare_ets_'))return'HAFS-A/B/M ETS comparison';if(name.startsWith('cycles_compare_fss'))return'HAFS-A/B/M FSS comparison';if(name.startsWith('cycles_metrics_'))return'Cycle metrics';if(name.startsWith('cycles_maps_'))return'Cycle maps';if(name.startsWith('cycles_ets_heatmap_'))return'Cycle ETS heatmap';if(name.startsWith('cycles_ets_bars_'))return'Model ETS by rainfall threshold';if(name.startsWith('cycles_fss_heatmap_'))return'Cycle FSS heatmap';if(name.startsWith('cycles_errors_'))return'Cycle error maps';if(name.startsWith('cycles_qpf_'))return'Cycle QPF animation';if(name.startsWith('compare_'))return'Model comparison';return name.replace(/\.(png|gif)$/,'').replaceAll('_',' ')}
 const fileUrl=f=>f.data||('/'+encodeURI(f.url)),imageUrl=f=>f.data||(fileUrl(f)+'?v='+encodeURIComponent(f.modified));
 function render(){options('storm',manifest.cases.map(c=>c.storm),'storms');options('model',manifest.cases.map(c=>c.model),'models');options('init',manifest.cases.map(c=>c.init),'initializations');
  const filters=['storm','model','init'].map(id=>document.getElementById(id).value),q=document.getElementById('search').value.toLowerCase();let shown=0;
