@@ -97,6 +97,7 @@ def test_cycles_from_yaml_defaults_and_slug():
         assert cc.landfall_time == datetime(2024, 9, 27, 3, 10)
         assert cc.inits is None
         assert cc.ets_threshold_mm == 25.0
+        assert cc.ets_bar_thresholds_in == list(range(2, 25, 2))
         assert cc.fss_thresholds_mm == [25.0, 50.0]
         assert cc.fss_scales_cells == [1, 3, 5, 11, 21, 41]
         assert cc.thresholds_mm[0] == 1
@@ -165,6 +166,7 @@ def _tiny_cycles_case(root, out):
         stage4_cache_dir=Path("/tmp"), inits=None,
         case_slug="testcycles",
         landfall_time=datetime(2024, 9, 27, 3, 10),
+        ets_bar_thresholds_in=[1.0 / 25.4],
         fss_thresholds_mm=[1.0], fss_scales_cells=[1, 3],
         make_animation=False,
     )
@@ -422,6 +424,7 @@ def test_compute_cycles_writes_csv_and_pngs():
         metrics_png = Path(tmp) / f"cycles_metrics_{slug}.png"
         maps_png = Path(tmp) / f"cycles_maps_{slug}.png"
         ets_png = Path(tmp) / f"cycles_ets_heatmap_{slug}.png"
+        ets_bars_png = Path(tmp) / f"cycles_ets_bars_{slug}.png"
         fss_png = Path(tmp) / f"cycles_fss_heatmap_{slug}.png"
         errors_png = Path(tmp) / f"cycles_errors_{slug}.png"
         fss_csv = Path(tmp) / f"cycles_fss_{slug}.csv"
@@ -429,6 +432,7 @@ def test_compute_cycles_writes_csv_and_pngs():
         assert metrics_png.exists(), "metrics PNG not written"
         assert maps_png.exists(), "maps PNG not written"
         assert ets_png.exists(), "ETS lead-time plot not written"
+        assert ets_bars_png.exists(), "ETS threshold bars not written"
         assert fss_png.exists(), "FSS lead-time plot not written"
         assert errors_png.exists(), "error maps not written"
         assert fss_csv.exists(), "FSS CSV not written"
@@ -453,6 +457,25 @@ def test_compute_cycles_writes_csv_and_pngs():
         assert int(early_parent["n"]) == 16
         # Perfect >= 1mm coverage everywhere -> ETS-relevant counts: all hits.
         assert int(early_parent["a"]) == 16 and int(early_parent["c"]) == 0
+
+
+def test_pooled_ets_by_threshold_sums_counts_before_scoring():
+    from cycles import pooled_ets_by_threshold
+
+    results = [
+        dict(init_dt=datetime(2024, 9, 24, 0), forecast="parent",
+             observation="MRMS",
+             rows=[dict(threshold=50.8, a=4, b=1, c=2, d=3)]),
+        dict(init_dt=datetime(2024, 9, 24, 6), forecast="parent",
+             observation="MRMS",
+             rows=[dict(threshold=50.8, a=2, b=2, c=1, d=5)]),
+    ]
+
+    row = pooled_ets_by_threshold(results, [2])[0]
+    assert row["threshold_mm"] == 50.8
+    assert row["n_cycles"] == 2
+    assert (row["a"], row["b"], row["c"], row["d"]) == (6, 3, 3, 8)
+    assert abs(row["ets"] - 0.24528301886792447) < 1e-12
 
 
 def test_animate_cycle_qpf_writes_gif():

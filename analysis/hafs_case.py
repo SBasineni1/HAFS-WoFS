@@ -336,6 +336,8 @@ class CyclesCase:
     inits: list            # explicit YYYYMMDDHH strings, or None to discover
     case_slug: str
     landfall_time: datetime = None
+    ets_bar_thresholds_in: list = field(
+        default_factory=lambda: list(range(2, 25, 2)))
     fss_thresholds_mm: list = field(default_factory=lambda: [25.0, 50.0])
     fss_scales_cells: list = field(default_factory=lambda: [1, 3, 5, 11, 21, 41])
     make_animation: bool = True
@@ -437,6 +439,8 @@ def cycles_from_yaml(yaml_path):
         inits=[str(i) for i in cfg["inits"]] if cfg.get("inits") else None,
         case_slug=yaml_path.stem,
         landfall_time=landfall_time,
+        ets_bar_thresholds_in=[float(v) for v in cfg.get(
+            "ets_bar_thresholds_in", list(range(2, 25, 2)))],
         fss_thresholds_mm=[float(v) for v in cfg.get(
             "fss_thresholds_mm", [25.0, 50.0])],
         fss_scales_cells=[int(v) for v in cfg.get(

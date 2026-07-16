@@ -246,6 +246,11 @@ def _plot_theme():
         plt.style.use("seaborn-v0_8-whitegrid")
 
 
+def _inches_to_mm(value):
+    """Stable inch-to-mm conversion for threshold lookup and de-duplication."""
+    return round(float(value) * 25.4, 6)
+
+
 def hours_before_landfall(ccase, init_dt):
     """Hours from initialization to landfall, or None when not configured."""
     if ccase.landfall_time is None:
@@ -392,7 +397,10 @@ def plot_ets_leadtime(ccase, results, out_path):
     rows = [r for r in results
             if r["observation"] == "MRMS" and r["forecast"] == "parent"]
     inits = sorted({r["init_dt"] for r in rows})
-    thresholds = sorted({item["threshold"] for r in rows for item in r["rows"]})
+    configured = sorted(set(ccase.thresholds_mm) | {ccase.ets_threshold_mm})
+    available = {item["threshold"] for r in rows for item in r["rows"]}
+    thresholds = [threshold for threshold in configured
+                  if any(np.isclose(threshold, value) for value in available)]
     if not inits or not thresholds:
         raise ValueError("No parent-vs-MRMS ETS rows to plot.")
 
@@ -452,6 +460,89 @@ def plot_ets_leadtime(ccase, results, out_path):
         f"{ccase.storm_name} — {ccase.model_label} parent ETS evolution\n"
         f"MRMS verification by rainfall threshold{timing}", fontsize=14,
         pad=14)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def pooled_ets_by_threshold(results, thresholds_in):
+    """Pool contingency counts across parent-vs-MRMS cycles, then compute ETS.
+
+    Each cycle is a separate forecast of the shared valid window. Pooling its
+    hits, false alarms, misses, and correct negatives mirrors a model-level
+    FULL summary while preserving the existing common swath and observations.
+    """
+    rows = [r for r in results
+            if r["observation"] == "MRMS" and r["forecast"] == "parent"]
+    summary = []
+    for threshold_in in thresholds_in:
+        threshold_mm = _inches_to_mm(threshold_in)
+        matched = [(r, item) for r in rows for item in r["rows"]
+                   if np.isclose(item["threshold"], threshold_mm)]
+        counts = {key: sum(int(item[key]) for _, item in matched)
+                  for key in ("a", "b", "c", "d")}
+        n = sum(counts.values())
+        a_ref = ((counts["a"] + counts["b"])
+                 * (counts["a"] + counts["c"]) / n) if n else 0.0
+        denominator = counts["a"] + counts["b"] + counts["c"] - a_ref
+        ets = ((counts["a"] - a_ref) / denominator
+               if denominator != 0 else np.nan)
+        summary.append({
+            "threshold_in": float(threshold_in),
+            "threshold_mm": threshold_mm,
+            "n_cycles": len({r["init_dt"] for r, _ in matched}),
+            "ets": float(ets),
+            **counts,
+        })
+    return summary
+
+
+def plot_ets_threshold_bars(ccase, results, out_path):
+    """Paper-style model ETS bars at even-inch rainfall thresholds."""
+    _plot_theme()
+    summary = pooled_ets_by_threshold(results, ccase.ets_bar_thresholds_in)
+    if not summary:
+        raise ValueError("No ETS bar thresholds configured.")
+
+    x = np.arange(len(summary))
+    values = np.asarray([row["ets"] for row in summary], dtype=float)
+    color = (sns.color_palette("colorblind")[0]
+             if sns is not None else "#1f77b4")
+    fig, ax = plt.subplots(figsize=(11.5, 5.8))
+    bars = ax.bar(x, np.nan_to_num(values, nan=0.0), width=0.72,
+                  color=color, edgecolor="white", linewidth=0.8,
+                  label=f"{ccase.model_label} parent")
+
+    finite = values[np.isfinite(values)]
+    ymin = min(-0.05, float(finite.min()) - 0.04) if finite.size else -0.05
+    ymax = max(0.4, float(finite.max()) + 0.08) if finite.size else 0.4
+    ymax = min(1.0, ymax)
+    ax.set_ylim(ymin, ymax)
+    offset = 0.015 * (ymax - ymin)
+    for bar, value in zip(bars, values):
+        if np.isfinite(value):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    value + (offset if value >= 0 else -offset),
+                    f"{value:.2f}", ha="center",
+                    va="bottom" if value >= 0 else "top", fontsize=8)
+        else:
+            bar.set_facecolor("#d9d9d9")
+            bar.set_hatch("//")
+            ax.text(bar.get_x() + bar.get_width() / 2, offset, "N/A",
+                    ha="center", va="bottom", fontsize=8, color="#666666")
+
+    n_cycles = max((row["n_cycles"] for row in summary), default=0)
+    ax.axhline(0.0, color="#555555", linewidth=0.8)
+    ax.set_xticks(x, [f"{row['threshold_in']:g}" for row in summary])
+    ax.set_xlabel("Rainfall accumulation threshold (inches)")
+    ax.set_ylabel("Equitable Threat Score (ETS)")
+    ax.grid(axis="y", linestyle=":", alpha=0.45)
+    ax.legend(frameon=False, loc="upper right")
+    ax.set_title(
+        f"{ccase.storm_name} - {ccase.model_label} parent rainfall skill\n"
+        f"Pooled ETS across {n_cycles} forecast cycles vs MRMS | valid "
+        f"{ccase.valid_start:%Y-%m-%d %HZ} - {ccase.valid_end:%Y-%m-%d %HZ}",
+        fontsize=13, pad=12)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -640,6 +731,8 @@ def compute_cycles(ccase, fields=None):
     thresholds = list(ccase.thresholds_mm)
     if ccase.ets_threshold_mm not in thresholds:
         thresholds = sorted(set(thresholds) | {ccase.ets_threshold_mm})
+    thresholds = sorted(set(thresholds) | {
+        _inches_to_mm(value) for value in ccase.ets_bar_thresholds_in})
 
     results = []
     fss_rows = []
@@ -724,6 +817,7 @@ def compute_cycles(ccase, fields=None):
     out_maps = ccase.out_dir / f"cycles_maps_{slug}.png"
     # Keep the established filenames for download and gallery compatibility.
     out_ets_leadtime = ccase.out_dir / f"cycles_ets_heatmap_{slug}.png"
+    out_ets_bars = ccase.out_dir / f"cycles_ets_bars_{slug}.png"
     out_fss_leadtime = ccase.out_dir / f"cycles_fss_heatmap_{slug}.png"
     out_errors = ccase.out_dir / f"cycles_errors_{slug}.png"
     plot_metrics(ccase, results, out_metrics, caveat=caveat)
@@ -732,6 +826,8 @@ def compute_cycles(ccase, fields=None):
     print(f"Saved plot : {out_maps}")
     plot_ets_leadtime(ccase, results, out_ets_leadtime)
     print(f"Saved plot : {out_ets_leadtime}")
+    plot_ets_threshold_bars(ccase, results, out_ets_bars)
+    print(f"Saved plot : {out_ets_bars}")
     plot_fss_leadtime(ccase, fss_rows, out_fss_leadtime)
     print(f"Saved plot : {out_fss_leadtime}")
     plot_error_maps(ccase, fields, out_errors)
