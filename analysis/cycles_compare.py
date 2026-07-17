@@ -62,21 +62,43 @@ def _read_csv(path):
         return list(csv.DictReader(fh))
 
 
+def _read_summary_csv(path):
+    """Read a cycle summary, converting metric columns to floats."""
+    text_fields = {"init", "init_dt", "valid_start", "valid_end"}
+    output = []
+    for row in _read_csv(path):
+        parsed = {}
+        for key, value in row.items():
+            if key in text_fields:
+                parsed[key] = value
+            else:
+                try:
+                    parsed[key] = float(value) if value != "" else np.nan
+                except (TypeError, ValueError):
+                    parsed[key] = np.nan
+        output.append(parsed)
+    return output
+
+
 def load_model_tables(model):
     """Return categorical/FSS rows and paths for one configured model."""
     try:
         case = cycles_from_yaml(model["cycles_yaml"])
     except (OSError, KeyError, ValueError) as exc:
         return {**model, "case": None, "categorical": [], "fss": [],
+                "summary": [],
                 "status": f"configuration unavailable: {exc}"}
     slug = case.output_slug
     cat_path = case.out_dir / f"cycles_{slug}.csv"
     fss_path = case.out_dir / f"cycles_fss_{slug}.csv"
+    summary_path = case.out_dir / f"cycles_summary_{slug}.csv"
     categorical = _read_csv(cat_path)
     fss = _read_csv(fss_path)
+    summary = _read_summary_csv(summary_path)
     status = "available" if categorical and fss else "awaiting cycle output"
     return {**model, "case": case, "categorical": categorical, "fss": fss,
-            "cat_path": cat_path, "fss_path": fss_path, "status": status}
+            "summary": summary, "cat_path": cat_path, "fss_path": fss_path,
+            "summary_path": summary_path, "status": status}
 
 
 def pooled_ets(rows, thresholds_in):
@@ -216,6 +238,148 @@ def plot_fss_comparison(models, thresholds_in, label, out_path):
     plt.close(fig)
 
 
+def _finite_summary_pairs(rows, x_key, y_key):
+    pairs = [(row.get(x_key, np.nan), row.get(y_key, np.nan))
+             for row in rows]
+    pairs = [(float(x), float(y)) for x, y in pairs
+             if np.isfinite(x) and np.isfinite(y)]
+    if not pairs:
+        return np.asarray([]), np.asarray([])
+    return map(np.asarray, zip(*pairs))
+
+
+def _spearman_text(x, y):
+    if len(x) < 3:
+        return "n<3"
+    try:
+        from scipy.stats import spearmanr
+        with np.errstate(all="ignore"):
+            rho = float(spearmanr(x, y).statistic)
+    except (ValueError, FloatingPointError):
+        rho = np.nan
+    return f"ρ={rho:.2f}"
+
+
+def plot_track_error_comparison(models, label, out_path):
+    """Mean track error versus landfall lead for each model."""
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    for index, model in enumerate(models):
+        x, y = _finite_summary_pairs(
+            model["summary"], "mean_track_err_km", "lead_hours_to_landfall")
+        if len(x) == 0:
+            continue
+        order = np.argsort(y)
+        ax.plot(x[order], y[order], marker="o", lw=2,
+                color=MODEL_COLORS.get(model["name"], plt.cm.Set2(index)),
+                label=model["name"])
+    ax.set_xlabel("Mean track error (km)")
+    ax.set_ylabel("Hours before landfall")
+    ax.grid(True, ls=":", alpha=0.45)
+    ax.legend(frameon=False)
+    ax.set_title(f"{label}\nTrack error by forecast-cycle lead", loc="left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_track_precip_comparison(models, label, out_path):
+    """Pooled model-colored track-error versus headline ETS scatter."""
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    pooled_x = []
+    pooled_y = []
+    for index, model in enumerate(models):
+        x, y = _finite_summary_pairs(
+            model["summary"], "mean_track_err_km", "ets_headline")
+        if len(x) == 0:
+            continue
+        pooled_x.extend(x)
+        pooled_y.extend(y)
+        ax.scatter(x, y, s=52,
+                   color=MODEL_COLORS.get(model["name"], plt.cm.Set2(index)),
+                   edgecolor="white",
+                   label=f"{model['name']} · {_spearman_text(x, y)}")
+    pooled_x = np.asarray(pooled_x)
+    pooled_y = np.asarray(pooled_y)
+    ax.set_xlabel("Mean track error (km)")
+    ax.set_ylabel("Headline ETS")
+    ax.grid(True, ls=":", alpha=0.45)
+    ax.legend(frameon=False, title=f"Pooled {_spearman_text(pooled_x, pooled_y)}")
+    ax.set_title(f"{label}\nTrack error and precipitation skill", loc="left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_shifted_ets_comparison(models, label, out_path):
+    """Compare model-mean unshifted and track-shifted headline ETS."""
+    x = np.arange(len(models), dtype=float)
+    width = 0.34
+    raw_means = []
+    shifted_means = []
+    counts = []
+    for model in models:
+        raw, shifted = _finite_summary_pairs(
+            model["summary"], "ets_headline", "ets_shifted")
+        raw_means.append(float(np.mean(raw)) if len(raw) else np.nan)
+        shifted_means.append(float(np.mean(shifted)) if len(shifted) else np.nan)
+        counts.append(len(raw))
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    ax.bar(x - width / 2, raw_means, width, color="#607d9b",
+           label="Unshifted")
+    bars = ax.bar(x + width / 2, shifted_means, width, color="#d97941",
+                  label="Track-shifted")
+    for bar, n in zip(bars, counts):
+        height = bar.get_height()
+        if np.isfinite(height):
+            ax.annotate(f"n={n}", (bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 4), textcoords="offset points",
+                        ha="center", fontsize=9)
+    ax.set_xticks(x, [model["name"] for model in models])
+    ax.set_ylabel("Mean headline ETS")
+    ax.grid(axis="y", ls=":", alpha=0.45)
+    ax.legend(frameon=False)
+    ax.set_title(f"{label}\nEffect of track-shifting on ETS", loc="left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_objects_comparison(models, label, out_path):
+    """Object area ratio and centroid error versus landfall lead by model."""
+    fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+    have_data = False
+    for index, model in enumerate(models):
+        rows = sorted(model["summary"],
+                      key=lambda row: row.get("lead_hours_to_landfall", np.nan))
+        x = np.asarray([row.get("lead_hours_to_landfall", np.nan) for row in rows])
+        color = MODEL_COLORS.get(model["name"], plt.cm.Set2(index))
+        for ax, key, marker in (
+                (axes[0], "obj_area_ratio", "o"),
+                (axes[1], "obj_centroid_err_km", "s")):
+            y = np.asarray([row.get(key, np.nan) for row in rows])
+            valid = np.isfinite(x) & np.isfinite(y)
+            if valid.any():
+                have_data = True
+                ax.plot(x[valid], y[valid], marker=marker, lw=2,
+                        color=color, label=model["name"])
+    if not have_data:
+        plt.close(fig)
+        return False
+    axes[0].axhline(1.0, color="gray", ls=":", lw=0.9)
+    axes[0].set_ylabel("Forecast / MRMS object area")
+    axes[1].set_ylabel("Centroid error (km)")
+    axes[1].set_xlabel("Hours before landfall (forecast initialization)")
+    axes[1].invert_xaxis()
+    for ax in axes:
+        ax.grid(True, ls=":", alpha=0.45)
+        ax.legend(frameon=False)
+    fig.suptitle(f"{label}\nPrecipitation-object comparison")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return True
+
+
 def generate_cycles_comparison(config):
     """Load available cycle tables and write the comparison figures."""
     models = [load_model_tables(model) for model in config["models"]]
@@ -230,4 +394,19 @@ def generate_cycles_comparison(config):
         print(f"{model['name']}: {model['status']}")
     print(f"Saved plot : {ets_path}")
     print(f"Saved plot : {fss_path}")
+    if any(model["summary"] for model in models):
+        summary_plots = [
+            ("cycles_compare_track_error.png", plot_track_error_comparison),
+            ("cycles_compare_track_precip.png", plot_track_precip_comparison),
+            ("cycles_compare_shifted_ets.png", plot_shifted_ets_comparison),
+        ]
+        for filename, plotter in summary_plots:
+            path = config["out_dir"] / filename
+            plotter(models, config["label"], path)
+            print(f"Saved plot : {path}")
+        object_path = config["out_dir"] / "cycles_compare_objects.png"
+        if plot_objects_comparison(models, config["label"], object_path):
+            print(f"Saved plot : {object_path}")
+    else:
+        print("Summary comparison plots skipped — no model has summary rows.")
     return models

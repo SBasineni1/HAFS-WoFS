@@ -1,6 +1,6 @@
 """Single entry point for the HAFS QPF/ETS framework.
 
-    python analysis/run.py <case.yaml> [parent|ets|rmse|cycles|cycles-compare|all|compare|replot]
+    python analysis/run.py <case.yaml> [parent|ets|rmse|cycles|cycles-compare|all|compare|replot|ml]
 
 Loads a StormCase from the YAML case file and runs the requested product(s):
   parent  nest + parent QPF vs MRMS + Stage IV 4-panel figure
@@ -11,6 +11,7 @@ Loads a StormCase from the YAML case file and runs the requested product(s):
   all     parent + ets + rmse (fields built once; default)
   compare HFSA-vs-HFSB rainfall comparison (takes a comparison YAML)
   replot  redraw the comparison figures from existing CSVs (no recompute)
+  ml      pooled ML regime diagnostics over a feature CSV
 """
 
 import sys
@@ -19,14 +20,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 COMMANDS = ("parent", "ets", "rmse", "cycles", "cycles-compare", "all",
-            "compare", "replot")
+            "compare", "replot", "ml")
 
 
 def parse_args(argv):
     """(yaml_path, command) from argv; command defaults to 'all'."""
     if not argv:
         print("usage: run.py <case.yaml> "
-              "[parent|ets|rmse|cycles|cycles-compare|all|compare|replot]")
+              "[parent|ets|rmse|cycles|cycles-compare|all|compare|replot|ml]")
         raise SystemExit(2)
     yaml_path = argv[0]
     command = argv[1] if len(argv) > 1 else "all"
@@ -56,6 +57,10 @@ def dispatch(case, command):
 
 def main(argv):
     yaml_path, command = parse_args(argv)
+    if command == "ml":
+        from ml_regime import load_ml_config, run_ml
+        run_ml(load_ml_config(yaml_path))
+        return
     if command == "cycles-compare":
         from cycles_compare import (load_cycles_comparison,
                                     generate_cycles_comparison)

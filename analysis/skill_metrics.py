@@ -8,13 +8,23 @@ import numpy as np
 from scipy.ndimage import uniform_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from hafs_common import haversine_km
 from hafs_case import position_on_track
+
+
+def cell_area_km2(grid_lat, grid_res):
+    """Per-cell area (km^2) on a regular latitude/longitude mesh."""
+    ns_km = float(grid_res) * 111.0
+    ew_km = ns_km * np.cos(np.radians(np.asarray(grid_lat, dtype=float)))
+    return ns_km * ew_km
 
 
 def swath_from_track(track, grid_lat, grid_lon, radius_km, init_dt, max_fhour):
     """Boolean mask: union of radius_km circles along the track, hourly over
     [init_dt, init_dt + max_fhour h]. Warns once if the track ends early."""
+    # Lazy so distribution/object metrics can import this module without the
+    # optional eccodes/cfgrib stack used by HAFS field I/O.
+    from hafs_common import haversine_km
+
     swath = np.zeros(grid_lat.shape, dtype=bool)
     last_t = track[-1][0]
     warned = False

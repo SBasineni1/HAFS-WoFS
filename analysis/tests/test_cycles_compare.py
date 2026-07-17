@@ -1,11 +1,15 @@
 import sys
+import csv
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cycles_compare import (
-    load_cycles_comparison, pooled_ets, plot_ets_comparison,
+    load_cycles_comparison, load_model_tables, pooled_ets, plot_ets_comparison,
     plot_fss_comparison,
 )
 
@@ -63,3 +67,31 @@ def test_comparison_plots_allow_missing_model():
         plot_fss_comparison(models, [1], "Test", fss_path)
         assert ets.exists() and ets.stat().st_size > 0
         assert fss_path.exists() and fss_path.stat().st_size > 0
+
+
+def test_load_model_tables_parses_summary_numeric_fields(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        case = SimpleNamespace(out_dir=root, output_slug="sample")
+        monkeypatch.setattr("cycles_compare.cycles_from_yaml", lambda _: case)
+        path = root / "cycles_summary_sample.csv"
+        with open(path, "w", newline="") as fh:
+            writer = csv.DictWriter(
+                fh, fieldnames=["init", "init_dt", "ets_headline",
+                                "mean_track_err_km", "ets_shifted"])
+            writer.writeheader()
+            writer.writerow({"init": "2024092400",
+                             "init_dt": "2024-09-24 00:00:00",
+                             "ets_headline": "0.25",
+                             "mean_track_err_km": "42.5",
+                             "ets_shifted": ""})
+        loaded = load_model_tables({"name": "HAFS-A",
+                                    "cycles_yaml": root / "case.yaml"})
+        assert loaded["summary"][0]["init"] == "2024092400"
+        assert loaded["summary"][0]["ets_headline"] == 0.25
+        assert loaded["summary"][0]["mean_track_err_km"] == 42.5
+        assert np.isnan(loaded["summary"][0]["ets_shifted"])
+        path.unlink()
+        missing = load_model_tables({"name": "HAFS-A",
+                                     "cycles_yaml": root / "case.yaml"})
+        assert missing["summary"] == []

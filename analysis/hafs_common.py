@@ -135,6 +135,74 @@ def read_hafs_tp_records(filepath):
     return records
 
 
+def read_hafs_env_records(filepath, wanted):
+    """Read selected environmental fields from one HAFS GRIB2 file.
+
+    ``wanted`` contains ``(short_name, level)`` pairs.  A numeric level means
+    an ``isobaricInhPa`` pressure level; ``None`` selects a single-level field.
+    The file is traversed once and the first matching message wins.
+    """
+    wanted = list(wanted)
+    wanted_set = set(wanted)
+    records = {}
+    with open(str(filepath), "rb") as fh:
+        while True:
+            gid = eccodes.codes_grib_new_from_file(fh)
+            if gid is None:
+                break
+            try:
+                def _opt(key, cast=int):
+                    try:
+                        return cast(eccodes.codes_get(gid, key))
+                    except Exception:
+                        return None
+
+                short_name = _opt("shortName", cast=str)
+                type_of_level = _opt("typeOfLevel", cast=str)
+                level = _opt("level")
+                if type_of_level == "isobaricInhPa":
+                    key = (short_name, level)
+                else:
+                    key = (short_name, None)
+                if key not in wanted_set or key in records:
+                    continue
+
+                nj = eccodes.codes_get(gid, "Nj")
+                ni = eccodes.codes_get(gid, "Ni")
+                lat0 = eccodes.codes_get(
+                    gid, "latitudeOfFirstGridPointInDegrees")
+                lon0 = eccodes.codes_get(
+                    gid, "longitudeOfFirstGridPointInDegrees")
+                lat1 = eccodes.codes_get(
+                    gid, "latitudeOfLastGridPointInDegrees")
+                lon1 = eccodes.codes_get(
+                    gid, "longitudeOfLastGridPointInDegrees")
+                vals = eccodes.codes_get_values(gid)
+                lats_1d = np.linspace(lat0, lat1, nj)
+                lons_1d = np.linspace(lon0, lon1, ni)
+                lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
+                lons_180 = np.where(lons_2d > 180,
+                                    lons_2d - 360, lons_2d)
+                data = vals.reshape(nj, ni)
+                missing = eccodes.codes_get(gid, "missingValue")
+                data = np.where(np.abs(data - missing) < 1.0, np.nan, data)
+                records[key] = {
+                    "npoints": ni * nj,
+                    "lats": lats_2d,
+                    "lons": lons_180,
+                    "data": data,
+                    "start_step": _opt("startStep"),
+                    "end_step": _opt("endStep"),
+                    "step_type": _opt("stepType", cast=str),
+                    "units": _opt("units", cast=str),
+                }
+            except Exception:
+                pass
+            finally:
+                eccodes.codes_release(gid)
+    return records
+
+
 def pick_total_record(records):
     """Pick the per-interval precip BUCKET from a moving-nest file.
 

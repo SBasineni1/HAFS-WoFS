@@ -49,7 +49,34 @@ from parent_qpf import (
     qpf_cmap,
 )
 from skill_metrics import continuous_scores, fractions_skill_score
+from precip_structure import (
+    distribution_stats, object_comparison, plot_distributions, plot_objects,
+    plot_pattern_r, plot_percentiles_by_cycle,
+)
 from rmse_scatter import valid_points
+from best_track import parse_bdeck_full
+from track_skill import (
+    cycle_track_summary, landfall_metrics, mean_displacement_deg,
+    plot_landfall, plot_shifted_skill, plot_track_error, plot_track_precip,
+    motion_vector, score_shifted, track_error_rows,
+)
+
+
+SUMMARY_FIELDS = [
+    "init", "init_dt", "lead_hours_to_landfall", "valid_start", "valid_end",
+    "ets_headline", "fss_headline", "rmse", "mae", "bias_mm", "pattern_r",
+    "mean_track_err_km", "max_track_err_km", "mean_along_km",
+    "mean_cross_km", "vmax_bias_kt", "mslp_bias_hpa",
+    "landfall_timing_err_h", "landfall_pos_err_km", "mean_dlat_deg",
+    "mean_dlon_deg", "mean_displacement_km",
+    "ets_shifted", "fss_shifted", "rmse_shifted", "pattern_r_shifted",
+    "fcst_p90", "fcst_p95", "fcst_p99", "obs_p90", "obs_p95", "obs_p99",
+    "fcst_volume_km3", "obs_volume_km3", "volume_ratio",
+    "obj_area_fcst_km2", "obj_area_obs_km2", "obj_area_ratio",
+    "obj_centroid_err_km", "obj_centroid_along_km",
+    "obj_centroid_cross_km", "obj_angle_diff_deg", "obj_mean_ratio",
+    "obj_max_ratio",
+]
 
 
 # =============================================================================
@@ -199,7 +226,8 @@ def build_cycle_fields(ccase):
         cycles.append(dict(init_str=case.init_str, init_dt=case.init_dt,
                            valid_start=effective_start,
                            valid_end=ccase.valid_end,
-                           f1=f1, f2=f2, parent_win=parent_win))
+                           f1=f1, f2=f2, parent_win=parent_win,
+                           track_fixes=case.track_fixes, _case=case))
         survivors.append(case)
     if not cycles:
         raise RuntimeError("Every eligible cycle failed field extraction.")
@@ -259,6 +287,18 @@ def _plot_theme():
 def _inches_to_mm(value):
     """Stable inch-to-mm conversion for threshold lookup and de-duplication."""
     return round(float(value) * 25.4, 6)
+
+
+def _csv_value(value):
+    """Render missing and non-finite summary values as empty CSV cells."""
+    if value is None:
+        return ""
+    try:
+        if not np.isfinite(value):
+            return ""
+    except TypeError:
+        pass
+    return value
 
 
 def hours_before_landfall(ccase, init_dt):
@@ -785,6 +825,16 @@ def compute_cycles(ccase, fields=None):
 
     results = []
     fss_rows = []
+    dist_rows = []
+    bdeck_full = parse_bdeck_full(ccase.best_track) if ccase.best_track else None
+    fss_thresholds_in = list(ccase.fss_thresholds_in)
+    if (ccase.headline_fss_threshold_in is not None
+            and ccase.headline_fss_threshold_in not in fss_thresholds_in):
+        fss_thresholds_in.append(ccase.headline_fss_threshold_in)
+    fss_scales_cells = list(ccase.fss_scales_cells)
+    if (ccase.headline_fss_scale_cells is not None
+            and ccase.headline_fss_scale_cells not in fss_scales_cells):
+        fss_scales_cells.append(ccase.headline_fss_scale_cells)
     print("\n" + "=" * 84)
     for cyc in fields["cycles"]:
         observations = [("MRMS", _cycle_observation(cyc, fields, "MRMS"))]
@@ -814,9 +864,9 @@ def compute_cycles(ccase, fields=None):
                              & np.isfinite(ogrid))
                     clean_fcst = np.nan_to_num(fgrid, nan=0.0)
                     clean_obs = np.nan_to_num(ogrid, nan=0.0)
-                    for threshold_in in ccase.fss_thresholds_in:
+                    for threshold_in in fss_thresholds_in:
                         threshold = _inches_to_mm(threshold_in)
-                        for scale in ccase.fss_scales_cells:
+                        for scale in fss_scales_cells:
                             fss_rows.append({
                                 "init": cyc["init_str"],
                                 "init_dt": cyc["init_dt"],
@@ -834,6 +884,22 @@ def compute_cycles(ccase, fields=None):
                                     scale, valid),
                             })
     print("=" * 84)
+
+    for cyc in fields["cycles"]:
+        sources = [
+            ("parent", cyc["parent_win"]),
+            ("MRMS", _cycle_observation(cyc, fields, "MRMS")),
+        ]
+        stage4_win = _cycle_observation(cyc, fields, "Stage IV")
+        if stage4_win is not None:
+            sources.append(("StageIV", stage4_win))
+        for source, field in sources:
+            dist_rows.append({
+                "init": cyc["init_str"],
+                "source": source,
+                **distribution_stats(field, swath, fields["grid_lat"],
+                                     ccase.grid_res),
+            })
 
     ccase.out_dir.mkdir(parents=True, exist_ok=True)
     slug = ccase.output_slug
@@ -875,6 +941,146 @@ def compute_cycles(ccase, fields=None):
         writer.writerows(fss_rows)
     print(f"Saved table: {out_fss_csv}")
 
+    out_dist_csv = ccase.out_dir / f"cycles_dist_{slug}.csv"
+    dist_fields = ["init", "source", "p50", "p90", "p95", "p99",
+                   "max_mm", "volume_km3", "wet_frac"]
+    with open(out_dist_csv, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=dist_fields)
+        writer.writeheader()
+        for row in dist_rows:
+            writer.writerow({key: _csv_value(row.get(key))
+                             for key in dist_fields})
+    print(f"Saved table: {out_dist_csv}")
+
+    track_rows_by_init = {}
+    track_summaries_by_init = {}
+    if bdeck_full is not None:
+        for cyc in fields["cycles"]:
+            fixes = cyc.get("track_fixes")
+            if not fixes:
+                continue
+            rows = track_error_rows(
+                fixes, bdeck_full,
+                cyc.get("valid_start", ccase.valid_start),
+                cyc.get("valid_end", ccase.valid_end),
+                ccase.track_step_hours)
+            landfall = landfall_metrics(fixes, bdeck_full,
+                                        ccase.landfall_time)
+            track_rows_by_init[cyc["init_dt"]] = rows
+            track_summaries_by_init[cyc["init_dt"]] = cycle_track_summary(
+                rows, landfall)
+        out_track_csv = ccase.out_dir / f"cycles_track_{slug}.csv"
+        track_fields = [
+            "init", "lead_hours_to_landfall", "valid", "fhr",
+            "pos_err_km", "along_km", "cross_km", "dlat_deg", "dlon_deg",
+            "vmax_err_kt", "mslp_err_hpa",
+        ]
+        with open(out_track_csv, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=track_fields)
+            writer.writeheader()
+            for init_dt, rows in sorted(track_rows_by_init.items()):
+                for row in rows:
+                    output = {key: _csv_value(row.get(key))
+                              for key in track_fields}
+                    output["init"] = init_dt.strftime("%Y%m%d%H")
+                    output["lead_hours_to_landfall"] = _csv_value(
+                        hours_before_landfall(ccase, init_dt))
+                    output["valid"] = row["valid"].strftime("%Y%m%d%H")
+                    writer.writerow(output)
+        print(f"Saved table: {out_track_csv}")
+    else:
+        print("Best track unavailable — track CSV and plots not produced.")
+
+    # The default headline FSS uses the first threshold and middle scale.
+    headline_threshold_in = (
+        ccase.headline_fss_threshold_in
+        if ccase.headline_fss_threshold_in is not None
+        else ccase.fss_thresholds_in[0])
+    headline_scale_cells = (
+        ccase.headline_fss_scale_cells
+        if ccase.headline_fss_scale_cells is not None
+        else ccase.fss_scales_cells[len(ccase.fss_scales_cells) // 2])
+    summary_rows = []
+    for cyc in fields["cycles"]:
+        init_dt = cyc["init_dt"]
+        precip = next((r for r in results
+                       if r["init_dt"] == init_dt
+                       and r["forecast"] == "parent"
+                       and r["observation"] == "MRMS"), None)
+        ets = np.nan
+        if precip is not None:
+            ets = next((r["ets"] for r in precip["rows"]
+                        if r["threshold"] == ccase.ets_threshold_mm), np.nan)
+        fss = next((r["fss"] for r in fss_rows
+                    if r["init_dt"] == init_dt
+                    and r["forecast"] == "parent"
+                    and r["observation"] == "MRMS"
+                    and r["threshold_in"] == headline_threshold_in
+                    and r["scale_cells"] == headline_scale_cells), np.nan)
+        cont = precip["cont"] if precip is not None else {}
+        row = {
+            "init": cyc["init_str"],
+            "init_dt": init_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "lead_hours_to_landfall": hours_before_landfall(ccase, init_dt),
+            "valid_start": cyc.get("valid_start", ccase.valid_start).strftime(
+                "%Y%m%d%H"),
+            "valid_end": cyc.get("valid_end", ccase.valid_end).strftime(
+                "%Y%m%d%H"),
+            "ets_headline": ets,
+            "fss_headline": fss,
+            "rmse": cont.get("rmse"),
+            "mae": cont.get("mae"),
+            "bias_mm": cont.get("bias"),
+            "pattern_r": cont.get("r"),
+            "_init_dt": init_dt,
+        }
+        dist_by_source = {item["source"]: item for item in dist_rows
+                          if item["init"] == cyc["init_str"]}
+        fcst_dist = dist_by_source.get("parent", {})
+        obs_dist = dist_by_source.get("MRMS", {})
+        for percentile in (90, 95, 99):
+            row[f"fcst_p{percentile}"] = fcst_dist.get(f"p{percentile}", np.nan)
+            row[f"obs_p{percentile}"] = obs_dist.get(f"p{percentile}", np.nan)
+        row["fcst_volume_km3"] = fcst_dist.get("volume_km3", np.nan)
+        row["obs_volume_km3"] = obs_dist.get("volume_km3", np.nan)
+        obs_volume = row["obs_volume_km3"]
+        row["volume_ratio"] = (
+            row["fcst_volume_km3"] / obs_volume
+            if np.isfinite(row["fcst_volume_km3"])
+            and np.isfinite(obs_volume) and obs_volume != 0 else np.nan)
+        midpoint = (cyc.get("valid_start", ccase.valid_start)
+                    + (cyc.get("valid_end", ccase.valid_end)
+                       - cyc.get("valid_start", ccase.valid_start)) / 2)
+        motion_unit = (motion_vector(bdeck_full, midpoint)
+                       if bdeck_full is not None else None)
+        row.update(object_comparison(
+            cyc["parent_win"], _cycle_observation(cyc, fields, "MRMS"),
+            swath, fields["grid_lat"], fields["grid_lon"],
+            ccase.object_threshold_mm, ccase.object_smooth_cells,
+            ccase.object_min_area_cells, motion_unit))
+        row.update(track_summaries_by_init.get(init_dt, {}))
+        if bdeck_full is not None:
+            dlat, dlon = mean_displacement_deg(
+                track_rows_by_init.get(init_dt, []))
+            shifted = score_shifted(
+                cyc["parent_win"], _cycle_observation(cyc, fields, "MRMS"),
+                swath, ccase.ets_threshold_mm,
+                _inches_to_mm(headline_threshold_in), headline_scale_cells,
+                dlat, dlon, ccase.grid_res)
+            row.update(shifted)
+            print(f"  shifted ETS {ets:.3f} -> "
+                  f"{shifted['ets_shifted']:.3f}")
+        summary_rows.append(row)
+    out_summary_csv = ccase.out_dir / f"cycles_summary_{slug}.csv"
+    with open(out_summary_csv, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=SUMMARY_FIELDS,
+                                extrasaction="ignore")
+        writer.writeheader()
+        for row in summary_rows:
+            writer.writerow({key: _csv_value(row.get(key))
+                             for key in SUMMARY_FIELDS})
+    print(f"Saved table: {out_summary_csv}")
+
     caveat = cycles_caveat(fields, ccase)
     print(caveat)
     out_metrics = ccase.out_dir / f"cycles_metrics_{slug}.png"
@@ -884,6 +1090,21 @@ def compute_cycles(ccase, fields=None):
     out_ets_bars = ccase.out_dir / f"cycles_ets_bars_{slug}.png"
     out_fss_leadtime = ccase.out_dir / f"cycles_fss_heatmap_{slug}.png"
     out_errors = ccase.out_dir / f"cycles_errors_{slug}.png"
+    structure_plots = [
+        (ccase.out_dir / f"cycles_dist_{slug}.png",
+         lambda path: plot_distributions(ccase, fields, path)),
+        (ccase.out_dir / f"cycles_percentiles_{slug}.png",
+         lambda path: plot_percentiles_by_cycle(ccase, summary_rows, path)),
+        (ccase.out_dir / f"cycles_pattern_r_{slug}.png",
+         lambda path: plot_pattern_r(ccase, summary_rows, path)),
+        (ccase.out_dir / f"cycles_objects_{slug}.png",
+         lambda path: plot_objects(ccase, summary_rows, path)),
+    ]
+    for path, plotter in structure_plots:
+        if plotter(path):
+            print(f"Saved plot : {path}")
+        else:
+            print(f"Skipped plot: {path.name} (no finite data)")
     plot_metrics(ccase, results, out_metrics, caveat=caveat)
     print(f"Saved plot : {out_metrics}")
     plot_maps(ccase, fields, out_maps)
@@ -894,6 +1115,20 @@ def compute_cycles(ccase, fields=None):
     print(f"Saved plot : {out_ets_bars}")
     plot_fss_leadtime(ccase, fss_rows, out_fss_leadtime)
     print(f"Saved plot : {out_fss_leadtime}")
+    if bdeck_full is not None and track_rows_by_init:
+        out_track_plot = ccase.out_dir / f"cycles_track_error_{slug}.png"
+        out_landfall_plot = ccase.out_dir / f"cycles_landfall_{slug}.png"
+        plot_track_error(track_rows_by_init, ccase, out_track_plot)
+        print(f"Saved plot : {out_track_plot}")
+        plot_landfall(track_summaries_by_init, ccase, out_landfall_plot)
+        print(f"Saved plot : {out_landfall_plot}")
+    if bdeck_full is not None:
+        out_shifted_plot = ccase.out_dir / f"cycles_shifted_ets_{slug}.png"
+        out_track_precip = ccase.out_dir / f"cycles_track_precip_{slug}.png"
+        plot_shifted_skill(summary_rows, ccase, out_shifted_plot)
+        print(f"Saved plot : {out_shifted_plot}")
+        plot_track_precip(summary_rows, ccase, out_track_precip)
+        print(f"Saved plot : {out_track_precip}")
     plot_error_maps(ccase, fields, out_errors)
     print(f"Saved plot : {out_errors}")
     if ccase.make_animation:
@@ -904,6 +1139,25 @@ def compute_cycles(ccase, fields=None):
             print(f"Animation unavailable: {exc}")
         else:
             print(f"Saved movie: {out_animation}")
+
+    if ccase.ml_features:
+        try:
+            from ml_features import append_features, extract_cycle_features
+            feature_rows = []
+            for cyc, summary_row in zip(fields["cycles"], summary_rows):
+                case = cyc.get("_case")
+                if case is None:
+                    try:
+                        case = cycle_storm_case(ccase, cyc["init_str"])
+                    except Exception as exc:
+                        print(f"  feature case {cyc['init_str']}: {exc}")
+                feature_rows.append(extract_cycle_features(
+                    ccase, case, cyc, summary_row, bdeck_full))
+            append_features(feature_rows, ccase.ml_features_csv)
+            print(f"features: appended {len(feature_rows)} rows to "
+                  f"{ccase.ml_features_csv}")
+        except Exception as exc:
+            print(f"features: extraction failed: {exc}")
 
 
 if __name__ == "__main__":

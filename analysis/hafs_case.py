@@ -45,11 +45,21 @@ def _extract_storm_name(cols):
     return None
 
 
-def parse_atcfunix(path):
-    """Parse a HAFS .atcfunix track file.
+def _atcf_value(cols, index):
+    """Optional positive ATCF numeric value, with sentinels removed."""
+    try:
+        value = float(cols[index])
+    except (IndexError, TypeError, ValueError):
+        return None
+    return value if value not in (0.0, -99.0) else None
 
-    Returns (storm_name_or_None, init_dt, track) where track is a list of
-    (valid_dt, lat, lon) deduped by lead hour (TAU) and sorted ascending.
+
+def parse_atcfunix_fixes(path):
+    """Parse full position and intensity fixes from a HAFS .atcfunix file.
+
+    Returns (storm_name_or_None, init_dt, fixes) where each fix is
+    (valid_dt, lat, lon, vmax_kt_or_None, mslp_hpa_or_None), deduped by lead
+    hour (TAU) with the first line winning and sorted ascending.
     """
     init_dt = None
     name = None
@@ -69,12 +79,19 @@ def parse_atcfunix(path):
             if init_dt is None:
                 init_dt = warn
             if tau not in by_tau:
-                by_tau[tau] = (warn + timedelta(hours=tau), lat, lon)
+                by_tau[tau] = (warn + timedelta(hours=tau), lat, lon,
+                               _atcf_value(cols, 8), _atcf_value(cols, 9))
             # Storm name: robust reverse scan for last all-alpha token.
             if name is None:
                 name = _extract_storm_name(cols)
-    track = [by_tau[t] for t in sorted(by_tau)]
-    return name, init_dt, track
+    fixes = [by_tau[t] for t in sorted(by_tau)]
+    return name, init_dt, fixes
+
+
+def parse_atcfunix(path):
+    """Parse position fixes from a HAFS .atcfunix track file."""
+    name, init_dt, fixes = parse_atcfunix_fixes(path)
+    return name, init_dt, [(t, lat, lon) for t, lat, lon, _, _ in fixes]
 
 
 def detect_model(run_dir):
@@ -142,6 +159,7 @@ class StormCase:
     track: list            # [(valid_dt, lat, lon), ...]
     case_slug: str
     init_str: str
+    track_fixes: list = None
 
     def position_at(self, valid_dt):
         """Linear interpolation of the track to any time; clamps to endpoints."""
@@ -341,6 +359,20 @@ class CyclesCase:
     fss_thresholds_in: list = field(default_factory=lambda: [1.0, 2.0])
     fss_scales_cells: list = field(default_factory=lambda: [1, 3, 5, 11, 21, 41])
     make_animation: bool = True
+    best_track: Path = None
+    track_step_hours: int = 6
+    headline_fss_threshold_in: float = None
+    headline_fss_scale_cells: int = None
+    object_threshold_mm: float = None
+    object_smooth_cells: int = 5
+    object_min_area_cells: int = 25
+    ml_features: bool = True
+    ml_features_csv: Path = field(default_factory=lambda: (
+        Path(__file__).resolve().parent / "output" / "ml_features.csv"))
+
+    def __post_init__(self):
+        if self.object_threshold_mm is None:
+            self.object_threshold_mm = self.ets_threshold_mm
 
     def fixed_grid(self):
         """Fixed lat/lon verification/plot mesh from domain + grid_res."""
@@ -452,6 +484,24 @@ def cycles_from_yaml(yaml_path):
         fss_scales_cells=[int(v) for v in cfg.get(
             "fss_scales_cells", [1, 3, 5, 11, 21, 41])],
         make_animation=bool(cfg.get("make_animation", True)),
+        best_track=Path(cfg["best_track"]) if cfg.get("best_track") else None,
+        track_step_hours=int(cfg.get("track_step_hours", 6)),
+        headline_fss_threshold_in=(
+            float(cfg["headline_fss_threshold_in"])
+            if cfg.get("headline_fss_threshold_in") is not None else None),
+        headline_fss_scale_cells=(
+            int(cfg["headline_fss_scale_cells"])
+            if cfg.get("headline_fss_scale_cells") is not None else None),
+        object_threshold_mm=(
+            float(cfg["object_threshold_mm"])
+            if cfg.get("object_threshold_mm") is not None else None),
+        object_smooth_cells=int(cfg.get("object_smooth_cells", 5)),
+        object_min_area_cells=int(cfg.get("object_min_area_cells", 25)),
+        ml_features=bool(cfg.get("ml_features", True)),
+        ml_features_csv=(Path(cfg["ml_features_csv"])
+                         if cfg.get("ml_features_csv") else
+                         Path(__file__).resolve().parent / "output" /
+                         "ml_features.csv"),
     )
 
 
@@ -463,7 +513,8 @@ def cycle_storm_case(ccase, init_str):
     """
     run_dir = ccase.run_root / init_str
     atcf_path = find_atcfunix(run_dir)
-    _, _, track = parse_atcfunix(atcf_path)
+    _, _, fixes = parse_atcfunix_fixes(atcf_path)
+    track = [(t, lat, lon) for t, lat, lon, _, _ in fixes]
     if not track:
         raise ValueError(f"Parsed 0 track fixes from {atcf_path}")
     return StormCase(
@@ -483,4 +534,5 @@ def cycle_storm_case(ccase, init_str):
         track=track,
         case_slug=ccase.case_slug,
         init_str=init_str,
+        track_fixes=fixes,
     )

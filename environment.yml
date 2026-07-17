@@ -19,3 +19,5 @@ dependencies:
   - cartopy
   - seaborn
   - pillow
+  - scikit-learn
+  # shap  # optional: SHAP importance plots; falls back to permutation importance
