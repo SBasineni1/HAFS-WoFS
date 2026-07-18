@@ -29,6 +29,7 @@ from skill_metrics import swath_from_track
 from hafs_common import discover_files, hafs_event_total
 from ets_full import hafs_parent_total, stage4_on_fixed
 from ets_score import build_mrms_total
+from plot_units import format_inches, inches, miles, square_miles
 
 _DEFAULT_FSS_SCALES = [1, 3, 5, 11, 21, 41]
 _DEFAULT_FSS_PLOT_THR = [10, 25, 50]
@@ -129,12 +130,13 @@ def plot_categorical_compare(cat_rows, label, out_path, observation="MRMS"):
                              key=lambda r: r["threshold"])
                 if not sub:
                     continue
-                ax.plot([r["threshold"] for r in sub], [r[key] for r in sub],
+                ax.plot([inches(r["threshold"]) for r in sub],
+                        [r[key] for r in sub],
                         color=colors[mdl],
                         **_FCST_STYLE.get(fc, dict(ls="-", marker="o")),
                         lw=2, label=f"{mdl} {fc}")
         ax.set_xscale("log")
-        ax.set_xlabel("Rainfall threshold (mm)")
+        ax.set_xlabel("Rainfall threshold (inches)")
         ax.set_ylabel(title)
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if key == "bias":
@@ -151,7 +153,7 @@ def plot_categorical_compare(cat_rows, label, out_path, observation="MRMS"):
 
 def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
                      forecast="parent", plot_thresholds=(10, 25, 50)):
-    """FSS vs neighborhood scale (km); one line per (model, threshold)."""
+    """FSS vs neighborhood scale; one line per (model, threshold)."""
     rows = [r for r in fss_rows if r["observation"] == observation
             and r["forecast"] == forecast and r["threshold"] in plot_thresholds]
     fig, ax = plt.subplots(figsize=(9, 6))
@@ -167,14 +169,14 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
                          key=lambda r: r["scale_km"])
             if not sub:
                 continue
-            line, = ax.plot([r["scale_km"] for r in sub],
+            line, = ax.plot([miles(r["scale_km"]) for r in sub],
                             [r["fss"] for r in sub],
                             color=colors[mdl],
                             lw=2, marker="o",
-                            label=f"{mdl}  {int(t)} mm")
+                            label=f"{mdl}  {format_inches(t)} in")
             if dashes[t] is not None:
                 line.set_dashes(dashes[t])
-    ax.set_xlabel("Neighborhood scale (km)")
+    ax.set_xlabel("Neighborhood scale (miles)")
     ax.set_ylabel("Fractions Skill Score (FSS)")
     ax.set_ylim(0, 1)
     ax.grid(True, ls=":", alpha=0.4)
@@ -257,7 +259,8 @@ def plot_performance_diagram(cat_rows, label, out_path, observation="MRMS",
                 color=colors[m], marker=markers[m], ms=8, lw=1.2,
                 markeredgecolor="white", zorder=5, label=m)
         for p in mp:
-            ax.annotate(f"{p['threshold']:g}", (p["success_ratio"], p["pod"]),
+            ax.annotate(f"{format_inches(p['threshold'])} in",
+                        (p["success_ratio"], p["pod"]),
                         textcoords="offset points", xytext=(5, 4),
                         fontsize=6, color=colors[m])
 
@@ -316,7 +319,8 @@ def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
     fig = plt.figure(figsize=(5 * n, 8.5))
     gs = fig.add_gridspec(2, n, height_ratios=[2.1, 1.0], hspace=0.35)
     cmap = plt.get_cmap("turbo")
-    norm = BoundaryNorm(_STORM_TOTAL_LEVELS, cmap.N, extend="max")
+    levels_in = inches(np.asarray(_STORM_TOTAL_LEVELS, dtype=float))
+    norm = BoundaryNorm(levels_in, cmap.N, extend="max")
 
     proj = ccrs.PlateCarree()
     lon_min, lon_max = float(np.min(grid_lon)), float(np.max(grid_lon))
@@ -326,7 +330,7 @@ def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
         ax = fig.add_subplot(gs[0, i], projection=proj)
         ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
         _add_us_geography(ax)
-        masked = np.where(swath & np.isfinite(field), field, np.nan)
+        masked = np.where(swath & np.isfinite(field), inches(field), np.nan)
         mesh = ax.pcolormesh(grid_lon, grid_lat, masked, cmap=cmap, norm=norm,
                              shading="auto", transform=proj)
         gl = ax.gridlines(draw_labels=True, linewidth=0.3, color="gray",
@@ -337,23 +341,24 @@ def plot_storm_total(sources, swath, grid_lat, grid_lon, grid_res, label,
             gl.left_labels = False
         st = accumulation_stats(field, swath, grid_lat, grid_res, thresholds_mm)
         stats[name] = st
-        ax.set_title(f"{name}\npeak {st['max_mm']:.0f} mm")
+        ax.set_title(f"{name}\npeak {inches(st['max_mm']):.1f} in")
         map_axes.append(ax)
     fig.colorbar(mesh, ax=map_axes, shrink=0.85, extend="max",
-                 label="Storm-total precipitation (mm)")
+                 label="Storm-total precipitation (inches)")
 
     axb = fig.add_subplot(gs[1, :])
     colors = _model_colors([n for n, _ in sources[1:]])
     x = np.arange(len(thresholds_mm))
     width = 0.8 / n
     for j, (name, _) in enumerate(sources):
-        areas = [stats[name]["area_km2"][float(t)] for t in thresholds_mm]
+        areas = [square_miles(stats[name]["area_km2"][float(t)])
+                 for t in thresholds_mm]
         color = "0.4" if j == 0 else colors.get(name)
         axb.bar(x + j * width, areas, width, label=name, color=color)
     axb.set_xticks(x + width * (n - 1) / 2)
-    axb.set_xticklabels([f"{t / 25.4:g} in" for t in thresholds_mm])
+    axb.set_xticklabels([f"{format_inches(t)} in" for t in thresholds_mm])
     axb.set_xlabel("Storm-total accumulation threshold")
-    axb.set_ylabel("Area exceeding (km²)")
+    axb.set_ylabel("Area exceeding (square miles)")
     axb.grid(True, axis="y", ls=":", alpha=0.4)
     axb.legend(fontsize=9)
 
@@ -507,12 +512,14 @@ def plot_storm_relative(composites, radial_by_source, label, out_path,
     axis = np.arange(-radius_rmw, radius_rmw + res_rmw / 2, res_rmw)
     x, y = np.meshgrid(axis, axis)
     cmap = plt.get_cmap("turbo")
-    norm = BoundaryNorm(_STORM_REL_LEVELS, cmap.N, extend="max")
+    levels_in = inches(np.asarray(_STORM_REL_LEVELS, dtype=float))
+    norm = BoundaryNorm(levels_in, cmap.N, extend="max")
 
     map_axes, mesh = [], None
     for i, (name, field) in enumerate(composites):
         ax = fig.add_subplot(gs[0, i])
-        mesh = ax.pcolormesh(x, y, field, cmap=cmap, norm=norm, shading="auto")
+        mesh = ax.pcolormesh(x, y, inches(field), cmap=cmap, norm=norm,
+                             shading="auto")
         for ring in range(1, int(radius_rmw) + 1):
             ax.add_patch(plt.Circle((0, 0), ring, fill=False, color="#555",
                                     lw=0.6, alpha=0.7))
@@ -525,7 +532,7 @@ def plot_storm_relative(composites, radial_by_source, label, out_path,
             ax.set_ylabel("y / RMW")
         map_axes.append(ax)
     fig.colorbar(mesh, ax=map_axes, shrink=0.85, extend="max",
-                 label="Mean 6-h precipitation (mm)")
+                 label="Mean 6-h precipitation (inches)")
 
     model_names = [name for name, _ in composites[1:]]
     colors = _model_colors(model_names)
@@ -536,12 +543,14 @@ def plot_storm_relative(composites, radial_by_source, label, out_path,
             continue
         rmid = [r["r_mid"] for r in rows]
         color = "0.4" if name == sources[0] else colors.get(name)
-        axr.plot(rmid, [r["median"] for r in rows], color=color, lw=2, label=name)
-        axr.fill_between(rmid, [r["p25"] for r in rows], [r["p75"] for r in rows],
+        axr.plot(rmid, [inches(r["median"]) for r in rows],
+                 color=color, lw=2, label=name)
+        axr.fill_between(rmid, [inches(r["p25"]) for r in rows],
+                         [inches(r["p75"]) for r in rows],
                          color=color, alpha=0.18)
     axr.set_xlim(0, radius_rmw)
     axr.set_xlabel("Distance from center (RMW)")
-    axr.set_ylabel("6-h precipitation (mm)")
+    axr.set_ylabel("6-h precipitation (inches)")
     axr.grid(True, ls=":", alpha=0.4)
     axr.legend(fontsize=9)
     axr.set_title("Radial distribution — median with 25–75% band")

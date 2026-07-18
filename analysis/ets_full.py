@@ -35,6 +35,7 @@ from parent_qpf import (
     stage4_total,
 )
 from hafs_case import from_yaml
+from plot_units import inches, miles
 
 
 def regrid_2d_to_fixed(src_lat, src_lon, data, grid_lat, grid_lon):
@@ -125,7 +126,7 @@ def plot_curves(case, results, max_fhour, out_path, caveat=""):
         rows = res["rows"]
         if not rows:
             continue
-        thr = [r["threshold"] for r in rows]
+        thr = [inches(r["threshold"]) for r in rows]
         ets = [r["ets"] for r in rows]
         style = _FCST_STYLE.get(res["forecast"], dict(ls="-", marker="o"))
         ax.plot(thr, ets, color=_OBS_COLOR.get(res["observation"], "gray"),
@@ -134,9 +135,9 @@ def plot_curves(case, results, max_fhour, out_path, caveat=""):
                       f"(n={res['n_valid']:,})")
     ax.axhline(0, color="gray", ls=":", lw=0.8)
     ax.set_xscale("log")
-    ax.set_xticks(case.thresholds_mm)
+    ax.set_xticks(inches(np.asarray(case.thresholds_mm, dtype=float)))
     ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
-    ax.set_xlabel("Rainfall threshold (mm)")
+    ax.set_xlabel("Rainfall threshold (inches)")
     ax.set_ylabel("Equitable Threat Score (ETS)")
     ax.set_ylim(-0.2, 1.0)
     ax.grid(True, which="both", ls=":", alpha=0.4)
@@ -144,7 +145,7 @@ def plot_curves(case, results, max_fhour, out_path, caveat=""):
     ax.set_title(
         f"{case.storm_name} — {case.model_label} QPF ETS vs MRMS & Stage IV\n"
         f"0–{max_fhour}h | init {case.init_dt:%Y-%m-%d %HZ} | "
-        f"TC swath ≤{case.mask_radius_km:.0f} km"
+        f"TC swath ≤{miles(case.mask_radius_km):.0f} miles"
     )
     if caveat:
         fig.text(0.5, -0.02, caveat, ha="center", fontsize=8, color="#555")

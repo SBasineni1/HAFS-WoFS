@@ -16,6 +16,7 @@ import numpy as np
 import yaml
 
 from hafs_case import cycles_from_yaml
+from plot_units import miles
 
 
 MODEL_COLORS = {
@@ -205,6 +206,7 @@ def plot_fss_comparison(models, thresholds_in, label, out_path):
                 continue
             have_data = True
             scale, mean, q25, q75 = map(np.asarray, zip(*series))
+            scale = miles(scale)
             color = MODEL_COLORS.get(model["name"], plt.cm.Set2(index))
             ax.fill_between(scale, q25, q75, color=color, alpha=0.14,
                             linewidth=0)
@@ -214,7 +216,7 @@ def plot_fss_comparison(models, thresholds_in, label, out_path):
         unit = "inch" if np.isclose(threshold, 1.0) else "inches"
         ax.set_title(f"Rainfall ≥ {threshold:g} {unit}",
                      fontweight="semibold", fontsize=13)
-        ax.set_xlabel("Neighborhood scale (km)")
+        ax.set_xlabel("Neighborhood scale (miles)")
         ax.set_ylim(0, 1)
         ax.grid(color="#d8e0e8", linewidth=0.8, alpha=0.65)
         ax.spines[["top", "right", "left"]].set_visible(False)
@@ -269,10 +271,10 @@ def plot_track_error_comparison(models, label, out_path):
         if len(x) == 0:
             continue
         order = np.argsort(y)
-        ax.plot(x[order], y[order], marker="o", lw=2,
+        ax.plot(miles(x[order]), y[order], marker="o", lw=2,
                 color=MODEL_COLORS.get(model["name"], plt.cm.Set2(index)),
                 label=model["name"])
-    ax.set_xlabel("Mean track error (km)")
+    ax.set_xlabel("Mean track error (miles)")
     ax.set_ylabel("Hours before landfall")
     ax.grid(True, ls=":", alpha=0.45)
     ax.legend(frameon=False)
@@ -292,15 +294,15 @@ def plot_track_precip_comparison(models, label, out_path):
             model["summary"], "mean_track_err_km", "ets_headline")
         if len(x) == 0:
             continue
-        pooled_x.extend(x)
+        pooled_x.extend(miles(x))
         pooled_y.extend(y)
-        ax.scatter(x, y, s=52,
+        ax.scatter(miles(x), y, s=52,
                    color=MODEL_COLORS.get(model["name"], plt.cm.Set2(index)),
                    edgecolor="white",
                    label=f"{model['name']} · {_spearman_text(x, y)}")
     pooled_x = np.asarray(pooled_x)
     pooled_y = np.asarray(pooled_y)
-    ax.set_xlabel("Mean track error (km)")
+    ax.set_xlabel("Mean track error (miles)")
     ax.set_ylabel("Headline ETS")
     ax.grid(True, ls=":", alpha=0.45)
     ax.legend(frameon=False, title=f"Pooled {_spearman_text(pooled_x, pooled_y)}")
@@ -357,6 +359,8 @@ def plot_objects_comparison(models, label, out_path):
                 (axes[0], "obj_area_ratio", "o"),
                 (axes[1], "obj_centroid_err_km", "s")):
             y = np.asarray([row.get(key, np.nan) for row in rows])
+            if key == "obj_centroid_err_km":
+                y = miles(y)
             valid = np.isfinite(x) & np.isfinite(y)
             if valid.any():
                 have_data = True
@@ -367,7 +371,7 @@ def plot_objects_comparison(models, label, out_path):
         return False
     axes[0].axhline(1.0, color="gray", ls=":", lw=0.9)
     axes[0].set_ylabel("Forecast / MRMS object area")
-    axes[1].set_ylabel("Centroid error (km)")
+    axes[1].set_ylabel("Centroid error (miles)")
     axes[1].set_xlabel("Hours before landfall (forecast initialization)")
     axes[1].invert_xaxis()
     for ax in axes:

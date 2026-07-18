@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
+from plot_units import inches, miles
+
 
 # Kept local so importing this module does not load eccodes through hafs_common.
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -336,23 +338,26 @@ def plot_track_precip(summary_rows, ccase, out_path):
 
     _plot_theme()
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.8))
-    track = np.asarray([row.get("mean_track_err_km", np.nan)
-                        for row in summary_rows], dtype=float)
+    track = miles(np.asarray([row.get("mean_track_err_km", np.nan)
+                              for row in summary_rows], dtype=float))
     lead = np.asarray([row.get("lead_hours_to_landfall", np.nan)
                        for row in summary_rows], dtype=float)
-    panels = (("ets_headline", "ETS"), ("fss_headline", "FSS"),
-              ("rmse", "RMSE (mm)"))
+    panels = (("ets_headline", "ETS", False),
+              ("fss_headline", "FSS", False),
+              ("rmse", "RMSE (inches)", True))
     scatter = None
-    for ax, (key, label) in zip(axes, panels):
+    for ax, (key, label, convert_rain) in zip(axes, panels):
         values = np.asarray([row.get(key, np.nan) for row in summary_rows],
                             dtype=float)
+        if convert_rain:
+            values = inches(values)
         finite = np.isfinite(track) & np.isfinite(values)
         colors = lead[finite] if np.isfinite(lead[finite]).any() else None
         scatter = ax.scatter(track[finite], values[finite], c=colors,
                              cmap="viridis", s=48, edgecolor="white")
         ax.text(0.03, 0.97, correlation_annotation(track, values),
                 transform=ax.transAxes, va="top", fontsize=9)
-        ax.set_xlabel("Mean track error (km)")
+        ax.set_xlabel("Mean track error (miles)")
         ax.set_ylabel(label)
         ax.grid(True, ls=":", alpha=0.4)
     if (scatter is not None and scatter.get_array() is not None
@@ -391,16 +396,19 @@ def plot_track_error(track_rows_by_init, ccase, out_path):
         rows = track_rows_by_init[init]
         valid = [r["valid"] for r in rows]
         label = init.strftime("%m-%d %HZ") if hasattr(init, "strftime") else str(init)
-        axes[0].plot(valid, [r["pos_err_km"] for r in rows], color=colors[init],
+        axes[0].plot(valid, [miles(r["pos_err_km"]) for r in rows],
+                     color=colors[init],
                      marker="o", lw=1.8, label=label)
-        axes[1].plot(valid, [r["along_km"] for r in rows], color=colors[init],
+        axes[1].plot(valid, [miles(r["along_km"]) for r in rows],
+                     color=colors[init],
                      lw=1.8, label=f"{label} along")
-        axes[1].plot(valid, [r["cross_km"] for r in rows], color=colors[init],
+        axes[1].plot(valid, [miles(r["cross_km"]) for r in rows],
+                     color=colors[init],
                      ls="--", lw=1.8, label=f"{label} cross")
         axes[2].plot(valid, [r["vmax_err_kt"] for r in rows], color=colors[init],
                      marker="o", lw=1.8, label=label)
-    axes[0].set_ylabel("Position error (km)")
-    axes[1].set_ylabel("Track-relative error (km)")
+    axes[0].set_ylabel("Position error (miles)")
+    axes[1].set_ylabel("Track-relative error (miles)")
     axes[2].set_ylabel("Vmax error (kt)")
     axes[2].set_xlabel("Valid time")
     axes[1].axhline(0, color="gray", ls=":", lw=0.8)
@@ -428,13 +436,14 @@ def plot_landfall(summaries_by_init, ccase, out_path):
     x = ([(ccase.landfall_time - init).total_seconds() / 3600.0
           for init in inits] if use_lead else inits)
     timing = [summaries_by_init[i]["landfall_timing_err_h"] for i in inits]
-    position = [summaries_by_init[i]["landfall_pos_err_km"] for i in inits]
+    position = [miles(summaries_by_init[i]["landfall_pos_err_km"])
+                for i in inits]
     fig, axes = plt.subplots(2, 1, figsize=(9.5, 7.5), sharex=True)
     axes[0].plot(x, timing, color="#d95f02", marker="o", lw=2)
     axes[1].plot(x, position, color="#1b9e77", marker="o", lw=2)
     axes[0].axhline(0, color="gray", ls=":", lw=0.8)
     axes[0].set_ylabel("Landfall timing error (h)\npositive = late")
-    axes[1].set_ylabel("Position error at landfall (km)")
+    axes[1].set_ylabel("Position error at landfall (miles)")
     axes[1].set_xticks(x)
     if use_lead:
         axes[1].set_xlabel("Hours before landfall (forecast initialization)")

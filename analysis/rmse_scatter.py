@@ -27,6 +27,7 @@ from matplotlib.colors import LogNorm
 from ets_full import build_verification_fields, field_pairs, stage4_caveat
 from skill_metrics import continuous_scores
 from hafs_case import from_yaml
+from plot_units import inches, miles
 
 
 def valid_points(fcst_grid, obs_grid, swath):
@@ -55,12 +56,13 @@ def plot_scatter(case, results, max_fhour, out_path, caveat=""):
                              figsize=(5.6 * ncols, 4.8 * nrows),
                              squeeze=False)
 
-    # One shared, equal axis range (mm) across all panels.
+    # One shared, equal axis range (inches) across all panels.
     lim = 1.0
     for r in results:
         if r["fcst"].size:
-            lim = max(lim, float(r["fcst"].max()), float(r["obs"].max()))
-    lim = float(np.ceil(lim / 25.0) * 25.0)
+            lim = max(lim, float(inches(r["fcst"].max())),
+                      float(inches(r["obs"].max())))
+    lim = float(np.ceil(lim))
 
     by_pair = {(r["forecast"], r["observation"]): r for r in results}
     for i, fname in enumerate(fcst_names):
@@ -72,13 +74,13 @@ def plot_scatter(case, results, max_fhour, out_path, caveat=""):
                 ax.text(0.5, 0.5, "no valid points", ha="center",
                         va="center", transform=ax.transAxes, color="#777")
             else:
-                hb = ax.hexbin(res["obs"], res["fcst"], gridsize=60,
+                hb = ax.hexbin(inches(res["obs"]), inches(res["fcst"]), gridsize=60,
                                extent=(0, lim, 0, lim), norm=LogNorm(),
                                cmap="viridis", mincnt=1)
                 fig.colorbar(hb, ax=ax, label="grid points")
-                box = (f"RMSE {s['rmse']:.1f} mm\n"
-                       f"MAE  {s['mae']:.1f} mm\n"
-                       f"bias {s['bias']:+.1f} mm\n"
+                box = (f"RMSE {inches(s['rmse']):.2f} in\n"
+                       f"MAE  {inches(s['mae']):.2f} in\n"
+                       f"bias {inches(s['bias']):+.2f} in\n"
                        f"r    {s['r']:.2f}\n"
                        f"n    {s['n']:,}")
                 ax.text(0.03, 0.97, box, transform=ax.transAxes, va="top",
@@ -89,14 +91,14 @@ def plot_scatter(case, results, max_fhour, out_path, caveat=""):
             ax.set_xlim(0, lim)
             ax.set_ylim(0, lim)
             ax.set_aspect("equal")
-            ax.set_xlabel(f"{oname} observed (mm)")
-            ax.set_ylabel(f"{fname} forecast (mm)")
+            ax.set_xlabel(f"{oname} observed (inches)")
+            ax.set_ylabel(f"{fname} forecast (inches)")
             ax.set_title(f"{fname} vs {oname}", fontsize=10)
 
     fig.suptitle(
         f"{case.storm_name} — {case.model_label} storm-total QPF vs observed\n"
         f"0–{max_fhour}h | init {case.init_dt:%Y-%m-%d %HZ} | "
-        f"TC swath ≤{case.mask_radius_km:.0f} km", fontsize=12)
+        f"TC swath ≤{miles(case.mask_radius_km):.0f} miles", fontsize=12)
     if caveat:
         fig.text(0.5, -0.01, caveat, ha="center", fontsize=8, color="#555")
     fig.tight_layout(rect=(0, 0, 1, 0.93))

@@ -60,6 +60,7 @@ from track_skill import (
     plot_landfall, plot_shifted_skill, plot_track_error, plot_track_precip,
     motion_vector, score_shifted, track_error_rows,
 )
+from plot_units import format_inches, format_miles, inches, miles
 
 
 SUMMARY_FIELDS = [
@@ -370,10 +371,10 @@ def plot_metrics(ccase, results, out_path, caveat=""):
         return np.nan
 
     panels = [
-        (axes[0], lambda res: res["cont"]["rmse"], "RMSE (mm)"),
-        (axes[1], lambda res: res["cont"]["bias"], "bias (mm)"),
+        (axes[0], lambda res: inches(res["cont"]["rmse"]), "RMSE (inches)"),
+        (axes[1], lambda res: inches(res["cont"]["bias"]), "bias (inches)"),
         (axes[2], lambda res: res["cont"]["r"], "Pearson correlation"),
-        (axes[3], ets_at, f"ETS @ {thr:g} mm"),
+        (axes[3], ets_at, f"ETS @ {format_inches(thr)} in"),
     ]
     for ax, getter, label in panels:
         for fname, oname in pairs:
@@ -401,7 +402,7 @@ def plot_metrics(ccase, results, out_path, caveat=""):
         f"{ccase.storm_name} — {ccase.model_label} QPF by initialization\n"
         f"start = later of {ccase.valid_start:%Y-%m-%d %HZ} or init; "
         f"end = {ccase.valid_end:%Y-%m-%d %HZ} | union TC swath "
-        f"≤{ccase.mask_radius_km:.0f} km{landfall_text}")
+        f"≤{miles(ccase.mask_radius_km):.0f} miles{landfall_text}")
     if caveat:
         fig.text(0.5, -0.01, caveat, ha="center", fontsize=8, color="#555")
     fig.tight_layout(rect=(0, 0, 1, 0.96))
@@ -458,7 +459,7 @@ def plot_maps(ccase, fields, out_path):
         f"initialization\naccumulations begin at the later of "
         f"{ccase.valid_start:%Y-%m-%d %HZ} or initialization and end "
         f"{ccase.valid_end:%Y-%m-%d %HZ} | swath outline "
-        f"≤{ccase.mask_radius_km:.0f} km", y=1.02)
+        f"≤{miles(ccase.mask_radius_km):.0f} miles", y=1.02)
     fig.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -484,7 +485,7 @@ def plot_ets_leadtime(ccase, results, out_path):
          for threshold in thresholds], dtype=float)
     use_lead = ccase.landfall_time is not None
     xlabels = [cycle_label(ccase, init_dt) for init_dt in inits]
-    ylabels = [f"≥ {threshold:g}" for threshold in thresholds]
+    ylabels = [f"≥ {format_inches(threshold)}" for threshold in thresholds]
     annotate = values.size <= 80
     fig, ax = plt.subplots(
         figsize=(max(8.0, 1.35 * len(inits) + 3.0),
@@ -525,7 +526,7 @@ def plot_ets_leadtime(ccase, results, out_path):
         xlabel = "Forecast initialization (UTC)"
         timing = ""
     ax.set_xlabel(xlabel, labelpad=10)
-    ax.set_ylabel("Rainfall threshold (mm)")
+    ax.set_ylabel("Rainfall threshold (inches)")
     ax.tick_params(axis="x", labelrotation=0)
     ax.tick_params(axis="y", labelrotation=0)
     ax.set_title(
@@ -643,7 +644,7 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
     # heatmap column.
     xlabels = [f"{init_dt:%m-%d}\n{init_dt:%HZ}" if index % 2 == 0 else ""
                for index, init_dt in enumerate(inits)]
-    ylabels = [f"{scale:g}" for scale in scales]
+    ylabels = [format_miles(scale) for scale in scales]
     fig = plt.figure(figsize=(max(11.5, 0.72 * len(inits) + 4.5),
                               max(4.8, 0.56 * len(scales) + 2.8)))
     grid = fig.add_gridspec(
@@ -705,7 +706,7 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
         xlabel = "Forecast initialization (UTC)"
         timing = ""
     fig.supxlabel(xlabel, y=0.04, fontsize=11)
-    fig.supylabel("Neighborhood scale (km)", x=0.02, fontsize=11)
+    fig.supylabel("Neighborhood scale (miles)", x=0.02, fontsize=11)
     fig.suptitle(
         f"{ccase.storm_name} — {ccase.model_label} parent FSS evolution\n"
         f"MRMS verification across neighborhood scales{timing}", fontsize=14)

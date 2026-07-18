@@ -56,6 +56,7 @@ from hafs_common import (
     discover_files, hafs_event_total,
 )
 from hafs_case import from_yaml
+from plot_units import inches
 
 # Stage IV QPE — NOAA water.noaa.gov daily source tarballs (GRIB2 since 2020).
 # Each daily tar is valid 12Z->12Z and holds 1h/6h/24h accumulation files.
@@ -289,7 +290,9 @@ def swath_masked(field, lats, lons, case, end_fhour):
 def plot_compare(case, panels, end_fhour, out_path):
     """panels: list of (lons, lats, data_mm, title); data may be None."""
     lat_min, lat_max, lon_min, lon_max = case.domain
-    cmap, norm = qpf_cmap()
+    cmap, _ = qpf_cmap()
+    levels_in = np.asarray(inches(np.asarray(QPF_LEVELS, dtype=float)))
+    norm = mcolors.BoundaryNorm(levels_in, cmap.N)
 
     fig, axes = plt.subplots(
         1, len(panels), figsize=(8 * len(panels), 7),
@@ -310,7 +313,7 @@ def plot_compare(case, panels, end_fhour, out_path):
         gl.top_labels = gl.right_labels = False
         if data is not None:
             cf = ax.contourf(
-                lons, lats, data, levels=QPF_LEVELS, cmap=cmap, norm=norm,
+                lons, lats, inches(data), levels=levels_in, cmap=cmap, norm=norm,
                 transform=ccrs.PlateCarree(), extend="max",
             )
         else:
@@ -319,8 +322,9 @@ def plot_compare(case, panels, end_fhour, out_path):
         ax.set_title(title)
 
     if cf is not None:
-        plt.colorbar(cf, ax=axes, label="Accumulated Precipitation (mm)",
-                     ticks=QPF_LEVELS, shrink=0.7, fraction=0.02)
+        plt.colorbar(cf, ax=axes, label="Accumulated precipitation (inches)",
+                     ticks=levels_in[::2], shrink=0.7, fraction=0.02,
+                     format="%g")
     valid_dt = case.init_dt + timedelta(hours=end_fhour)
     fig.suptitle(
         f"{case.storm_name} — {case.model_label} QPF: nest vs parent vs MRMS vs Stage IV "
@@ -447,7 +451,7 @@ def generate_parent_figure(case):
     out_png = case.out_dir / f"parent_qpf_{case.output_slug}.png"
     panels = [
         (grid_lon, grid_lat, nest_display,
-         f"{case.model_label} Nest APCP (moving 2-km, summed intervals)\n"
+         f"{case.model_label} Nest APCP (moving 1.2-mile, summed intervals)\n"
          f"0–{end_fhour}h"),
         (hafs_lons, hafs_lats, hafs_display,
          f"{case.model_label} Parent APCP\n0–{end_fhour}h (valid {valid_end:%Y-%m-%d %HZ})"),

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from skill_metrics import cell_area_km2
 from track_skill import along_cross_km
+from plot_units import cubic_miles, inches, miles, square_miles
 
 
 DIST_FIELDS = ("p50", "p90", "p95", "p99", "max_mm", "volume_km3",
@@ -120,28 +121,31 @@ def plot_distributions(ccase, fields, out_path):
     if not any(values.size for _, values, _ in pooled):
         return False
 
-    finite = np.concatenate([values for _, values, _ in pooled if values.size])
+    finite = np.concatenate([inches(values) for _, values, _ in pooled
+                             if values.size])
     upper = max(1.0, float(np.percentile(finite, 99.9)), float(np.max(finite)))
     bins = np.linspace(0.0, upper, 51)
     fig, axes = plt.subplots(1, 3, figsize=(16, 5.2))
     for name, values, color in pooled:
         if not values.size:
             continue
-        axes[0].hist(values, bins=bins, density=True, histtype="step", lw=2,
+        values_in = inches(values)
+        axes[0].hist(values_in, bins=bins, density=True, histtype="step", lw=2,
                      color=color, label=name)
-        vx, vy = _cdf(values)
+        vx, vy = _cdf(values_in)
         axes[1].plot(vx, vy, lw=2, color=color, label=name)
     axes[0].set_yscale("log")
-    axes[0].set_xlabel("Window-total precipitation (mm)")
+    axes[0].set_xlabel("Window-total precipitation (inches)")
     axes[0].set_ylabel("Probability density")
-    axes[1].set_xlabel("Window-total precipitation (mm)")
+    axes[1].set_xlabel("Window-total precipitation (inches)")
     axes[1].set_ylabel("Cumulative probability")
     for cycle in cycles:
         fcst_q, obs_q = qq_percentiles(
             cycle["parent_win"], cycle.get("mrms_win", fields.get("mrms_win")),
             swath)
         if np.isfinite(fcst_q).any():
-            axes[2].plot(obs_q, fcst_q, color="#9aa0a6", lw=0.8, alpha=0.7)
+            axes[2].plot(inches(obs_q), inches(fcst_q), color="#9aa0a6",
+                         lw=0.8, alpha=0.7)
     common_fcst = []
     common_obs = []
     for cycle in cycles:
@@ -153,14 +157,14 @@ def plot_distributions(ccase, fields, out_path):
             common_fcst.append(fgrid[valid])
             common_obs.append(ogrid[valid])
     if common_fcst:
-        fq = np.percentile(np.concatenate(common_fcst), np.arange(1, 100))
-        oq = np.percentile(np.concatenate(common_obs), np.arange(1, 100))
+        fq = inches(np.percentile(np.concatenate(common_fcst), np.arange(1, 100)))
+        oq = inches(np.percentile(np.concatenate(common_obs), np.arange(1, 100)))
         axes[2].plot(oq, fq, color="#2563a6", lw=2.5, label="pooled")
         limit = max(float(np.nanmax(fq)), float(np.nanmax(oq)), 1.0)
         axes[2].plot([0, limit], [0, limit], color="#555555", ls=":",
                      lw=1.2, label="1:1")
-    axes[2].set_xlabel("MRMS percentile (mm)")
-    axes[2].set_ylabel("Forecast percentile (mm)")
+    axes[2].set_xlabel("MRMS percentile (inches)")
+    axes[2].set_ylabel("Forecast percentile (inches)")
     axes[0].legend(frameon=False)
     axes[2].legend(frameon=False)
     for ax, title in zip(axes, ("Pooled PDF", "Pooled CDF", "Forecast–MRMS Q–Q")):
@@ -186,18 +190,22 @@ def plot_percentiles_by_cycle(ccase, summary_rows, out_path):
     fig, axes = plt.subplots(2, 1, figsize=(10.5, 8.5), sharex=True)
     colors = {90: "#2a9d78", 95: "#e9a23b", 99: "#c43d4d"}
     for percentile in (90, 95, 99):
-        axes[0].plot(x, [row.get(f"fcst_p{percentile}", np.nan) for row in rows],
+        axes[0].plot(x, [inches(row.get(f"fcst_p{percentile}", np.nan))
+                         for row in rows],
                      color=colors[percentile], marker="o", lw=2,
                      label=f"forecast P{percentile}")
-        axes[0].plot(x, [row.get(f"obs_p{percentile}", np.nan) for row in rows],
+        axes[0].plot(x, [inches(row.get(f"obs_p{percentile}", np.nan))
+                         for row in rows],
                      color=colors[percentile], marker="s", lw=1.4, ls="--",
                      label=f"MRMS P{percentile}")
-    axes[1].plot(x, [row.get("fcst_volume_km3", np.nan) for row in rows],
+    axes[1].plot(x, [cubic_miles(row.get("fcst_volume_km3", np.nan))
+                     for row in rows],
                  color="#2563a6", marker="o", lw=2, label="forecast")
-    axes[1].plot(x, [row.get("obs_volume_km3", np.nan) for row in rows],
+    axes[1].plot(x, [cubic_miles(row.get("obs_volume_km3", np.nan))
+                     for row in rows],
                  color="#222222", marker="s", lw=2, ls="--", label="MRMS")
-    axes[0].set_ylabel("Precipitation (mm)")
-    axes[1].set_ylabel("Volume (km³)")
+    axes[0].set_ylabel("Precipitation (inches)")
+    axes[1].set_ylabel("Volume (cubic miles)")
     axes[0].legend(ncols=2, fontsize=8, frameon=False)
     axes[1].legend(frameon=False)
     for ax in axes:
@@ -355,29 +363,34 @@ def plot_objects(ccase, summary_rows, out_path):
     fig, axes = plt.subplots(2, 1, figsize=(11, 8.5), sharex=True)
     width = 0.36
     axes[0].bar(x - width / 2,
-                [row.get("obj_area_fcst_km2", np.nan) for row in rows],
+                [square_miles(row.get("obj_area_fcst_km2", np.nan))
+                 for row in rows],
                 width, color="#2563a6", label="forecast area")
     axes[0].bar(x + width / 2,
-                [row.get("obj_area_obs_km2", np.nan) for row in rows],
+                [square_miles(row.get("obj_area_obs_km2", np.nan))
+                 for row in rows],
                 width, color="#555555", label="MRMS area")
     ratio_ax = axes[0].twinx()
     ratio_ax.plot(x, [row.get("obj_area_ratio", np.nan) for row in rows],
                   color="#d97941", marker="o", lw=1.8, label="area ratio")
     ratio_ax.axhline(1.0, color="#d97941", ls=":", lw=0.9)
     ratio_ax.set_ylabel("Forecast / MRMS area")
-    axes[0].set_ylabel("Object area (km²)")
+    axes[0].set_ylabel("Object area (square miles)")
     axes[0].legend(loc="upper left", frameon=False)
     ratio_ax.legend(loc="upper right", frameon=False)
     axes[1].bar(x - width / 2,
-                [row.get("obj_centroid_along_km", np.nan) for row in rows],
+                [miles(row.get("obj_centroid_along_km", np.nan))
+                 for row in rows],
                 width, color="#2a9d78", label="along-track")
     axes[1].bar(x + width / 2,
-                [row.get("obj_centroid_cross_km", np.nan) for row in rows],
+                [miles(row.get("obj_centroid_cross_km", np.nan))
+                 for row in rows],
                 width, color="#c43d4d", label="cross-track")
-    axes[1].plot(x, [row.get("obj_centroid_err_km", np.nan) for row in rows],
+    axes[1].plot(x, [miles(row.get("obj_centroid_err_km", np.nan))
+                     for row in rows],
                  color="#222222", marker="o", lw=2, label="total error")
     axes[1].axhline(0.0, color="#777777", ls=":", lw=0.9)
-    axes[1].set_ylabel("Centroid displacement (km)")
+    axes[1].set_ylabel("Centroid displacement (miles)")
     axes[1].legend(frameon=False, ncols=3)
     for ax in axes:
         ax.grid(True, axis="y", ls=":", alpha=0.4)
