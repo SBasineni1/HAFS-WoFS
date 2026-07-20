@@ -724,6 +724,49 @@ def _map_context(ax, ccase):
     ax.add_feature(cfeature.BORDERS, linewidth=0.4, edgecolor="gray")
 
 
+_BASE_ERROR_LEVELS_IN = np.asarray(
+    [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0,
+     3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
+    dtype=float,
+)
+
+
+def precipitation_error_levels(error_fields):
+    """Symmetric nonlinear inch bounds for forecast-minus-observation maps.
+
+    Small errors receive fine color steps. Above two inches, each successive
+    bin widens so unusually large tropical-cyclone rainfall errors remain on
+    the scale without sacrificing detail near zero. The base scale reaches
+    24 inches and grows geometrically when a field exceeds that range.
+    """
+    positive = list(_BASE_ERROR_LEVELS_IN)
+    finite = [np.abs(np.asarray(field, dtype=float)[np.isfinite(field)])
+              for field in error_fields]
+    finite = [values for values in finite if values.size]
+    maximum = max((float(np.max(values)) for values in finite), default=0.0)
+    step = positive[-1] - positive[-2]
+    while positive[-1] < maximum:
+        step *= 1.5
+        positive.append(positive[-1] + step)
+    positive = np.asarray(positive)
+    return np.concatenate((-positive[:0:-1], positive))
+
+
+def _precipitation_error_scale(error_fields):
+    levels = precipitation_error_levels(error_fields)
+    cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
+    norm = colors.BoundaryNorm(levels, cmap.N)
+    preferred = np.asarray([0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
+    positive = levels[levels >= 0]
+    ticks = [value for value in preferred
+             if np.any(np.isclose(positive, value))]
+    if positive[-1] > preferred[-1]:
+        ticks.append(float(positive[-1]))
+    ticks = np.asarray(ticks)
+    ticks = np.concatenate((-ticks[:0:-1], ticks))
+    return cmap, norm, ticks
+
+
 def plot_error_maps(ccase, fields, out_path):
     """Parent minus MRMS for representative early, middle, late cycles."""
     cycles_data = fields["cycles"]
@@ -732,10 +775,7 @@ def plot_error_maps(ccase, fields, out_path):
     errors = [(cycle["parent_win"]
               - _cycle_observation(cycle, fields, "MRMS")) / 25.4
               for cycle in selected]
-    finite = np.concatenate([field[np.isfinite(field)] for field in errors
-                             if np.isfinite(field).any()])
-    limit = max(1.0, float(np.nanpercentile(np.abs(finite), 98)))
-    norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+    error_cmap, norm, error_ticks = _precipitation_error_scale(errors)
     fig, axes = plt.subplots(
         1, len(selected), figsize=(5.3 * len(selected), 4.8), squeeze=False,
         subplot_kw={"projection": ccrs.PlateCarree()})
@@ -745,7 +785,7 @@ def plot_error_maps(ccase, fields, out_path):
         _map_context(ax, ccase)
         error = np.where(fields["swath"], errors[col], np.nan)
         mesh = ax.pcolormesh(fields["grid_lon"], fields["grid_lat"], error,
-                             cmap="RdBu_r", norm=norm, shading="auto",
+                             cmap=error_cmap, norm=norm, shading="auto",
                              transform=ccrs.PlateCarree())
         ax.contour(fields["grid_lon"], fields["grid_lat"],
                    fields["swath"].astype(float), levels=[0.5],
@@ -753,8 +793,9 @@ def plot_error_maps(ccase, fields, out_path):
                    transform=ccrs.PlateCarree())
         ax.set_title(f"{cycle_label(ccase, cycle['init_dt'])}\n"
                      f"{cycle_window_label(cycle)}")
-    fig.colorbar(mesh, ax=axes, shrink=0.82, pad=0.02,
-                 label="Forecast − MRMS (inches)")
+    fig.colorbar(mesh, ax=axes, shrink=0.82, pad=0.02, ticks=error_ticks,
+                 spacing="uniform",
+                 label="Forecast − MRMS (inches; wider intervals at extremes)")
     fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} representative "
                  "cycle errors", fontsize=13)
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
@@ -767,10 +808,7 @@ def animate_cycle_qpf(ccase, fields, out_path):
     errors = [(cycle["parent_win"]
               - _cycle_observation(cycle, fields, "MRMS")) / 25.4
               for cycle in cycles_data]
-    finite = np.concatenate([field[np.isfinite(field)] for field in errors
-                             if np.isfinite(field).any()])
-    limit = max(1.0, float(np.nanpercentile(np.abs(finite), 98)))
-    error_norm = colors.TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+    error_cmap, error_norm, error_ticks = _precipitation_error_scale(errors)
     qpf_cmap_obj, _ = qpf_cmap()
     qpf_norm = colors.BoundaryNorm(
         np.asarray(QPF_LEVELS, dtype=float) / 25.4, qpf_cmap_obj.N)
@@ -778,18 +816,19 @@ def animate_cycle_qpf(ccase, fields, out_path):
     fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.2),
                              subplot_kw={"projection": projection})
     qpf_map = plt.cm.ScalarMappable(norm=qpf_norm, cmap=qpf_cmap_obj)
-    err_map = plt.cm.ScalarMappable(norm=error_norm, cmap="RdBu_r")
+    err_map = plt.cm.ScalarMappable(norm=error_norm, cmap=error_cmap)
     fig.colorbar(qpf_map, ax=axes[:2], shrink=0.72, pad=0.02,
                  label="Accumulated precipitation (inches)")
     fig.colorbar(err_map, ax=axes[2], shrink=0.72, pad=0.02,
-                 label="Forecast − MRMS (inches)")
+                 ticks=error_ticks, spacing="uniform",
+                 label="Forecast − MRMS (inches; wider intervals at extremes)")
 
     def update(frame):
         cycle = cycles_data[frame]
         mrms_win = _cycle_observation(cycle, fields, "MRMS")
         panels = ((cycle["parent_win"] / 25.4, qpf_cmap_obj, qpf_norm, "Parent forecast"),
                   (mrms_win / 25.4, qpf_cmap_obj, qpf_norm, "MRMS observed"),
-                  (errors[frame], "RdBu_r", error_norm, "Parent − MRMS"))
+                  (errors[frame], error_cmap, error_norm, "Parent − MRMS"))
         for ax, (data, cmap, norm, title) in zip(axes, panels):
             ax.clear()
             _map_context(ax, ccase)

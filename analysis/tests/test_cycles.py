@@ -569,6 +569,18 @@ def test_animate_cycle_qpf_writes_gif():
         assert output.exists() and output.stat().st_size > 0
 
 
+def test_precipitation_error_levels_widen_beyond_two_inches():
+    from cycles import precipitation_error_levels
+
+    levels = precipitation_error_levels([np.asarray([0.2, 3.0, 40.0])])
+    assert np.allclose(levels, -levels[::-1])
+    assert levels[-1] >= 40.0
+    positive = levels[levels >= 0]
+    high_steps = np.diff(positive[positive >= 2.0])
+    assert np.all(high_steps[1:] >= high_steps[:-1])
+    assert 24.0 in positive
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

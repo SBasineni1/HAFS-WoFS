@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FIX = Path(__file__).resolve().parent / "fixtures"
 
 import numpy as np
-from hafs_case import decode_latlon, parse_atcfunix, detect_model, auto_domain, StormCase, from_yaml, find_atcfunix, position_on_track
+from hafs_case import decode_latlon, parse_atcfunix, parse_atcfunix_fixes, normalize_storm_id, detect_model, auto_domain, StormCase, from_yaml, find_atcfunix, position_on_track
 
 
 def test_decode_latlon():
@@ -43,6 +43,13 @@ def test_detect_model():
     assert detect_model("/work2/.../helene/HFSB") == "HAFS-B"
     assert detect_model("/data/hfsa_run/lower") == "HAFS-A"   # case-insensitive
     assert detect_model("/work2/.../helene/other") == "HAFS"
+    # HAFS-M (experimental multistorm): the 'hfsb_multistorm' file tag contains
+    # 'HFSB', so it must resolve to HAFS-M, not HAFS-B.
+    assert detect_model("/work2/.../helene/HFSM") == "HAFS-M"
+    assert detect_model("/data/hfsb_multistorm/parent") == "HAFS-M"
+    assert detect_model(
+        "/runs/00l.2024092412.hfsb_multistorm.parent.atm.f000.grb2"
+    ) == "HAFS-M"
 
 
 def test_auto_domain_pads_track_bbox():
@@ -270,6 +277,66 @@ def test_from_yaml_empty_track_raises():
             assert False, "expected ValueError"
         except ValueError as e:
             assert "0 track fixes" in str(e)
+    finally:
+        shutil.rmtree(tmpdir)
+
+
+# A multistorm parent.trak.atcfunix.all: Helene (AL 09) interleaved with a
+# concurrent Pacific storm (EP 10), the way the real hfsb_multistorm file is.
+_MULTISTORM_ALL = (
+    "AL, 09, 2024092400, 03, HFSB, 000, 179N,  818W,  31, 1002\n"
+    "EP, 10, 2024092400, 03, HFSB, 000, 161N,  990W,  52,  989\n"
+    "AL, 09, 2024092400, 03, HFSB, 003, 185N,  823W,  36, 1003\n"
+    "EP, 10, 2024092400, 03, HFSB, 003, 165N,  995W,  55,  985\n"
+)
+
+
+def test_normalize_storm_id_forms():
+    assert normalize_storm_id("AL09") == ("AL", 9)
+    assert normalize_storm_id("al9") == ("AL", 9)
+    assert normalize_storm_id("09L") == ("AL", 9)
+    assert normalize_storm_id("AL, 09") == ("AL", 9)
+    assert normalize_storm_id("EP10") == ("EP", 10)
+    assert normalize_storm_id(None) is None
+    assert normalize_storm_id("garbage") is None
+
+
+def test_parse_atcfunix_filters_multistorm_to_target():
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        trk = tmpdir / "00l.2024092400.hfsb_multistorm.parent.trak.atcfunix.all"
+        trk.write_text(_MULTISTORM_ALL)
+        # Helene only: two fixes, both Atlantic (negative lon near 82W).
+        _, _, hel = parse_atcfunix(trk, "AL09")
+        assert len(hel) == 2
+        assert hel[0][1] == np.float64(17.9) or abs(hel[0][1] - 17.9) < 1e-9
+        assert abs(hel[0][2] - (-81.8)) < 1e-9   # 818W
+        assert abs(hel[1][1] - 18.5) < 1e-9      # f003 lat
+        # The Pacific storm must be excluded entirely.
+        assert all(lon < -50 for _, _, lon in hel)
+        # Targeting the other storm isolates it instead.
+        _, _, john = parse_atcfunix(trk, "EP10")
+        assert len(john) == 2
+        assert abs(john[0][2] - (-99.0)) < 1e-9  # 990W
+    finally:
+        shutil.rmtree(tmpdir)
+
+
+def test_find_atcfunix_falls_back_to_all_for_multistorm():
+    """No bare *.atcfunix (multistorm): use the parent *.atcfunix.all, not the
+    .orig backup or the combined track, even though it is a 00l aggregate."""
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        base = "00l.2024092400.hfsb_multistorm"
+        for suffix in (
+            "parent.trak.atcfunix.all",
+            "parent.trak.atcfunix.all.orig",
+            "trak.atcfunix.all",
+            "parent.trak.atcfunix.f000",
+        ):
+            (tmpdir / f"{base}.{suffix}").write_text(_MULTISTORM_ALL)
+        chosen = find_atcfunix(tmpdir)
+        assert chosen.name == f"{base}.parent.trak.atcfunix.all", chosen
     finally:
         shutil.rmtree(tmpdir)
 

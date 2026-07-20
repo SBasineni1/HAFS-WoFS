@@ -1,8 +1,13 @@
-# HAFS-M placeholder configuration. Update run_root when HAFS-M files arrive;
-# the multi-model comparison works before this directory or its CSVs exist.
+# HAFS-M — experimental multistorm HAFS-B run for Hurricane Helene.
+# Its parent tracks bundle several storms (Helene 'AL, 09' alongside 'EP, 10')
+# and it emits no bare *.atcfunix, only *.atcfunix.all — so storm_id isolates
+# Helene and track discovery falls back to the .all file automatically.
+# NOTE: confirm run_root points at the dir holding the YYYYMMDDHH cycle subdirs
+# of 00l.<cycle>.hfsb_multistorm.* files.
 run_root: /work2/noaa/aoml-hafs1/ahazelto/student_data/suchit_data/helene/HFSM
 model_label: HAFS-M
-data_available: false
+storm_id: AL09
+data_available: true
 valid_start: 2024092600
 valid_end: 2024092800
 landfall_time: 202409270310

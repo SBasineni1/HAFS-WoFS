@@ -54,13 +54,42 @@ def _atcf_value(cols, index):
     return value if value not in (0.0, -99.0) else None
 
 
-def parse_atcfunix_fixes(path):
+# ATCF single-letter basin suffix (as used in filenames like '09l') -> the
+# two-letter basin code that appears in the file's first column ('AL').
+_BASIN_BY_LETTER = {"L": "AL", "E": "EP", "C": "CP", "W": "WP"}
+
+
+def normalize_storm_id(storm_id):
+    """('AL', 9) from 'AL09'/'al9'/'09L'/'9l'/'AL, 09'; None if unset/bad.
+
+    Used to isolate one cyclone in a multistorm .atcfunix.all that carries
+    several storms (e.g. Helene 'AL, 09' alongside 'EP, 10'), where the file
+    lines never spell the storm name.
+    """
+    if not storm_id:
+        return None
+    s = str(storm_id).replace(",", "").replace(" ", "").upper()
+    m = re.fullmatch(r"([A-Z]{2})(\d{1,2})", s)          # AL09
+    if m:
+        return m.group(1), int(m.group(2))
+    m = re.fullmatch(r"(\d{1,2})([A-Z])", s)             # 09L
+    if m:
+        return _BASIN_BY_LETTER.get(m.group(2), m.group(2)), int(m.group(1))
+    return None
+
+
+def parse_atcfunix_fixes(path, storm_id=None):
     """Parse full position and intensity fixes from a HAFS .atcfunix file.
 
     Returns (storm_name_or_None, init_dt, fixes) where each fix is
     (valid_dt, lat, lon, vmax_kt_or_None, mslp_hpa_or_None), deduped by lead
     hour (TAU) with the first line winning and sorted ascending.
+
+    When ``storm_id`` is given (e.g. 'AL09'), only lines for that basin +
+    cyclone number are kept — required for multistorm tracks that interleave
+    several storms in one file.
     """
+    target = normalize_storm_id(storm_id)
     init_dt = None
     name = None
     by_tau = {}
@@ -69,6 +98,12 @@ def parse_atcfunix_fixes(path):
             cols = [c.strip() for c in line.split(",")]
             if len(cols) < 8:
                 continue
+            if target is not None:
+                try:
+                    if (cols[0], int(cols[1])) != target:
+                        continue
+                except (ValueError, IndexError):
+                    continue
             try:
                 warn = datetime.strptime(cols[2], "%Y%m%d%H")
                 tau = int(cols[5])
@@ -88,15 +123,24 @@ def parse_atcfunix_fixes(path):
     return name, init_dt, fixes
 
 
-def parse_atcfunix(path):
+def parse_atcfunix(path, storm_id=None):
     """Parse position fixes from a HAFS .atcfunix track file."""
-    name, init_dt, fixes = parse_atcfunix_fixes(path)
+    name, init_dt, fixes = parse_atcfunix_fixes(path, storm_id)
     return name, init_dt, [(t, lat, lon) for t, lat, lon, _, _ in fixes]
 
 
 def detect_model(run_dir):
-    """'HAFS-A'/'HAFS-B'/'HAFS' from HFSA/HFSB in the run-dir path."""
+    """'HAFS-A'/'HAFS-B'/'HAFS-M'/'HAFS' from the model tag in the run-dir path.
+
+    HAFS-M is the experimental multistorm run. Its files carry an
+    'hfsb_multistorm' tag (e.g. 00l.2024092412.hfsb_multistorm.parent.atm.
+    f000.grb2), so 'multistorm'/'hfsm' must be tested before 'hfsb' — the
+    multistorm tag contains the 'HFSB' substring and would otherwise be
+    misread as HAFS-B.
+    """
     s = str(run_dir).upper()
+    if "MULTISTORM" in s or "HFSM" in s:
+        return "HAFS-M"
     if "HFSA" in s:
         return "HAFS-A"
     if "HFSB" in s:
@@ -160,6 +204,7 @@ class StormCase:
     case_slug: str
     init_str: str
     track_fixes: list = None
+    storm_id: str = None   # e.g. 'AL09'; isolates one storm in a multistorm track
 
     def position_at(self, valid_dt):
         """Linear interpolation of the track to any time; clamps to endpoints."""
@@ -220,10 +265,16 @@ def find_atcfunix(run_dir, init_str=None):
     """
     hits = sorted(Path(run_dir).glob("**/*.atcfunix"))
     if not hits:
+        # Multistorm/experimental runs emit no bare *.atcfunix — only the
+        # concatenated *.atcfunix.all (plus per-lead .fNNN and .all.orig
+        # backups). Fall back to the complete .all track; the .orig backups
+        # end in '.orig' and are excluded by the glob.
+        hits = sorted(Path(run_dir).glob("**/*.atcfunix.all"))
+    if not hits:
         raise FileNotFoundError(
-            f"No .atcfunix track file under {run_dir} (glob '**/*.atcfunix'). "
-            f"Add an explicit 'track', 'init', and 'domain' to the YAML to run "
-            f"without one."
+            f"No .atcfunix or .atcfunix.all track file under {run_dir} "
+            f"(globs '**/*.atcfunix', '**/*.atcfunix.all'). Add an explicit "
+            f"'track', 'init', and 'domain' to the YAML to run without one."
         )
     if init_str is not None:
         init_str = str(init_str)
@@ -289,11 +340,13 @@ def from_yaml(yaml_path):
         print(f"Using track file: {atcf_path}")
     else:
         atcf_path = find_atcfunix(run_dir, configured_init_str)
-    name, init_from_atcf, track = parse_atcfunix(atcf_path)
+    storm_id = cfg.get("storm_id")
+    name, init_from_atcf, track = parse_atcfunix(atcf_path, storm_id)
 
     if not track:
+        hint = (f" for storm_id {storm_id!r}" if storm_id else "")
         raise ValueError(
-            f"Parsed 0 track fixes from {atcf_path}; "
+            f"Parsed 0 track fixes from {atcf_path}{hint}; "
             f"cannot derive domain/position."
         )
 
@@ -324,6 +377,7 @@ def from_yaml(yaml_path):
         track=track,
         case_slug=yaml_path.stem,
         init_str=init_str,
+        storm_id=storm_id,
     )
 
 
@@ -366,6 +420,7 @@ class CyclesCase:
     object_threshold_mm: float = None
     object_smooth_cells: int = 5
     object_min_area_cells: int = 25
+    storm_id: str = None   # e.g. 'AL09'; isolates one storm in a multistorm track
     ml_features: bool = True
     ml_features_csv: Path = field(default_factory=lambda: (
         Path(__file__).resolve().parent / "output" / "ml_features.csv"))
@@ -474,6 +529,7 @@ def cycles_from_yaml(yaml_path):
                                       "/tmp/stage4_cache")),
         inits=[str(i) for i in cfg["inits"]] if cfg.get("inits") else None,
         case_slug=yaml_path.stem,
+        storm_id=cfg.get("storm_id"),
         landfall_time=landfall_time,
         ets_bar_thresholds_in=[float(v) for v in cfg.get(
             "ets_bar_thresholds_in", list(range(2, 25, 2)))],
@@ -513,10 +569,11 @@ def cycle_storm_case(ccase, init_str):
     """
     run_dir = ccase.run_root / init_str
     atcf_path = find_atcfunix(run_dir)
-    _, _, fixes = parse_atcfunix_fixes(atcf_path)
+    _, _, fixes = parse_atcfunix_fixes(atcf_path, ccase.storm_id)
     track = [(t, lat, lon) for t, lat, lon, _, _ in fixes]
     if not track:
-        raise ValueError(f"Parsed 0 track fixes from {atcf_path}")
+        hint = (f" for storm_id {ccase.storm_id!r}" if ccase.storm_id else "")
+        raise ValueError(f"Parsed 0 track fixes from {atcf_path}{hint}")
     return StormCase(
         run_dir=run_dir,
         init_dt=datetime.strptime(init_str, "%Y%m%d%H"),
@@ -535,4 +592,5 @@ def cycle_storm_case(ccase, init_str):
         case_slug=ccase.case_slug,
         init_str=init_str,
         track_fixes=fixes,
+        storm_id=ccase.storm_id,
     )
