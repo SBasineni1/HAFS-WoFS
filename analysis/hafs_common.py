@@ -69,6 +69,24 @@ def discover_files(run_dir, glob, fhours_filter=None):
 # HAFS loader + fixed-grid reprojection
 # =============================================================================
 
+def grid_latlon(lat0, lon0, lat1, lon1, nj, ni):
+    """2-D (lats, lons in −180…180) meshes for a regular_ll GRIB grid.
+
+    Latitudes span lat0→lat1 directly. Longitudes are reconstructed by walking
+    east from lon0: a global grid whose first point sits east of its last (e.g.
+    the HAFS-M multistorm parent, 210 E → 10 E) crosses the 0/360 seam, so the
+    stored last longitude has already wrapped below the first. Unwrapping it
+    (+360) before the linear span keeps the axis monotonic; the result is then
+    folded back into −180…180. Regional grids (lon0 < lon1) are unaffected.
+    """
+    if lon1 < lon0:
+        lon1 = lon1 + 360.0
+    lats_1d = np.linspace(lat0, lat1, nj)
+    lons_1d = np.linspace(lon0, lon1, ni)
+    lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
+    lons_2d = np.where(lons_2d > 180, lons_2d - 360, lons_2d)
+    return lats_2d, lons_2d
+
 def read_hafs_tp_records(filepath):
     """Return every APCP/tp record in a HAFS GRIB2 file with grid + accumulation
     metadata, as a list of dicts.
@@ -111,10 +129,7 @@ def read_hafs_tp_records(filepath):
                 step_type = _opt("stepType", cast=str)
 
                 vals = eccodes.codes_get_values(gid)
-                lats_1d = np.linspace(lat0, lat1, nj)
-                lons_1d = np.linspace(lon0, lon1, ni)
-                lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
-                lons_180 = np.where(lons_2d > 180, lons_2d - 360, lons_2d)
+                lats_2d, lons_180 = grid_latlon(lat0, lon0, lat1, lon1, nj, ni)
                 data = vals.reshape(nj, ni)
                 missing = eccodes.codes_get(gid, "missingValue")
                 data = np.where(np.abs(data - missing) < 1.0, np.nan, data)
@@ -178,11 +193,7 @@ def read_hafs_env_records(filepath, wanted):
                 lon1 = eccodes.codes_get(
                     gid, "longitudeOfLastGridPointInDegrees")
                 vals = eccodes.codes_get_values(gid)
-                lats_1d = np.linspace(lat0, lat1, nj)
-                lons_1d = np.linspace(lon0, lon1, ni)
-                lons_2d, lats_2d = np.meshgrid(lons_1d, lats_1d)
-                lons_180 = np.where(lons_2d > 180,
-                                    lons_2d - 360, lons_2d)
+                lats_2d, lons_180 = grid_latlon(lat0, lon0, lat1, lon1, nj, ni)
                 data = vals.reshape(nj, ni)
                 missing = eccodes.codes_get(gid, "missingValue")
                 data = np.where(np.abs(data - missing) < 1.0, np.nan, data)
