@@ -581,6 +581,14 @@ def test_precipitation_error_levels_widen_beyond_two_inches():
     assert 24.0 in positive
 
 
+def test_representative_cycle_indices_add_intermediate_times():
+    from cycles import representative_cycle_indices
+
+    assert representative_cycle_indices(11) == [0, 2, 4, 6, 8, 10]
+    assert representative_cycle_indices(3) == [0, 1, 2]
+    assert representative_cycle_indices(0) == []
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

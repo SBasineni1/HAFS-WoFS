@@ -18,6 +18,7 @@ _DEFAULTS = {
     "out_dir": Path("analysis/output/ml_regime"),
     "targets": ["ets_headline", "fss_headline", "rmse"],
     "min_samples_warn": 30,
+    "min_lead_hours_to_landfall": None,
 }
 
 
@@ -45,6 +46,9 @@ def load_ml_config(yaml_path):
         "targets": list(raw.get("targets", _DEFAULTS["targets"])),
         "min_samples_warn": int(raw.get(
             "min_samples_warn", _DEFAULTS["min_samples_warn"])),
+        "min_lead_hours_to_landfall": (
+            float(raw["min_lead_hours_to_landfall"])
+            if raw.get("min_lead_hours_to_landfall") is not None else None),
     }
 
 
@@ -78,6 +82,26 @@ def load_features(csv_path):
     identities = [{name: row.get(name, "") for name in _IDENTITY_COLUMNS}
                   for row in rows]
     return rows, _FeatureMatrix(values, identities), feature_names
+
+
+def filter_by_landfall_lead(rows, X, minimum_hours):
+    """Keep only ML rows initialized at least ``minimum_hours`` pre-landfall.
+
+    This filters the modeling matrix only. The pooled feature CSV and all cycle
+    products retain every initialization. Rows without a finite landfall lead
+    are excluded when a cutoff is active because their regime is unknown.
+    """
+    if minimum_hours is None:
+        return rows, X, 0
+    lead = np.asarray([row.get("lead_hours_to_landfall", np.nan)
+                       for row in rows], dtype=float)
+    keep = np.isfinite(lead) & (lead >= float(minimum_hours))
+    identities = getattr(X, "identities", None)
+    if identities is not None:
+        identities = [identity for identity, wanted in zip(identities, keep)
+                      if wanted]
+    filtered = _FeatureMatrix(np.asarray(X)[keep], identities)
+    return [row for row, wanted in zip(rows, keep) if wanted], filtered, int((~keep).sum())
 
 
 def _sklearn_tools():
@@ -115,7 +139,8 @@ def _save_figure(fig, path, exploratory_n=None):
     plt.close(fig)
 
 
-def train_target(X, y, feature_names, target, out_dir, min_samples_warn):
+def train_target(X, y, feature_names, target, out_dir, min_samples_warn,
+                 sample_note=""):
     """Fit and diagnose one target using leave-one-out cross-validation."""
     (regressor, partial_dependence, permutation_importance,
      mean_absolute_error, r2_score, leave_one_out) = _sklearn_tools()
@@ -164,7 +189,8 @@ def train_target(X, y, feature_names, target, out_dir, min_samples_warn):
         ax.barh(np.asarray(feature_names)[order], importance[order],
                 color="#2563a6")
         ax.set_xlabel("Decrease in model score")
-        ax.set_title(f"{target} (permutation importance — shap not installed)")
+        title = f"{target} (permutation importance — shap not installed)"
+        ax.set_title(f"{title}\n{sample_note}" if sample_note else title)
         fig.tight_layout()
         _save_figure(fig, importance_path, exploratory_n)
     else:
@@ -175,7 +201,8 @@ def train_target(X, y, feature_names, target, out_dir, min_samples_warn):
         shap.summary_plot(shap_values.values, X_fit,
                           feature_names=feature_names, show=False)
         fig = plt.gcf()
-        plt.title(f"SHAP importance — {target}")
+        title = f"SHAP importance — {target}"
+        plt.title(f"{title}\n{sample_note}" if sample_note else title)
         fig.tight_layout()
         _save_figure(fig, importance_path, exploratory_n)
 
@@ -189,7 +216,10 @@ def train_target(X, y, feature_names, target, out_dir, min_samples_warn):
         display = partial_dependence.from_estimator(
             fitted, X_fit, features=list(top_indices),
             feature_names=feature_names)
-        display.figure_.suptitle(f"Partial dependence — {target}", y=1.03)
+        title = f"Partial dependence — {target}"
+        if sample_note:
+            title += f"\n{sample_note}"
+        display.figure_.suptitle(title, y=1.03)
         display.figure_.tight_layout()
         pdp_figure = display.figure_
     else:
@@ -197,7 +227,8 @@ def train_target(X, y, feature_names, target, out_dir, min_samples_warn):
         ax.text(0.5, 0.5, "No finite feature values available",
                 ha="center", va="center", transform=ax.transAxes)
         ax.set_axis_off()
-        ax.set_title(f"Partial dependence — {target}")
+        title = f"Partial dependence — {target}"
+        ax.set_title(f"{title}\n{sample_note}" if sample_note else title)
     _save_figure(pdp_figure, out_dir / f"ml_pdp_{target}.png",
                  exploratory_n)
 
@@ -226,7 +257,8 @@ def train_target(X, y, feature_names, target, out_dir, min_samples_warn):
     ax.set_ylim(limits)
     ax.set_xlabel("Actual")
     ax.set_ylabel("LOO prediction")
-    ax.set_title(f"Predicted vs actual — {target}")
+    title = f"Predicted vs actual — {target}"
+    ax.set_title(f"{title}\n{sample_note}" if sample_note else title)
     ax.text(0.04, 0.96, f"CV R² = {cv_r2:.3f}\nCV MAE = {cv_mae:.3f}",
             transform=ax.transAxes, ha="left", va="top",
             bbox={"facecolor": "white", "alpha": 0.85,
@@ -248,6 +280,14 @@ def run_ml(cfg):
         return []
 
     rows, X, feature_names = load_features(features_csv)
+    input_count = len(rows)
+    minimum_lead = cfg.get("min_lead_hours_to_landfall")
+    rows, X, dropped = filter_by_landfall_lead(rows, X, minimum_lead)
+    sample_note = ""
+    if minimum_lead is not None:
+        sample_note = f"Initializations ≥{minimum_lead:g} h before landfall"
+        print(f"ML landfall-lead filter: kept {len(rows)}/{input_count} rows "
+              f"({sample_note.lower()}); dropped {dropped}")
     summaries = []
     for target in cfg["targets"]:
         if target not in TARGET_COLUMNS:
@@ -255,14 +295,16 @@ def run_ml(cfg):
             continue
         y = np.asarray([row.get(target, np.nan) for row in rows], dtype=float)
         summary = train_target(X, y, feature_names, target, cfg["out_dir"],
-                               cfg["min_samples_warn"])
+                               cfg["min_samples_warn"], sample_note=sample_note)
         if summary is not None:
+            summary["min_lead_hours_to_landfall"] = minimum_lead
             summaries.append(summary)
 
     out_dir = Path(cfg["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "ml_summary.csv"
-    fields = ["target", "n", "cv_r2", "cv_mae", "top_features"]
+    fields = ["target", "n", "cv_r2", "cv_mae", "top_features",
+              "min_lead_hours_to_landfall"]
     with open(summary_path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()

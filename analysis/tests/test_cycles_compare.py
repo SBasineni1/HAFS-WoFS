@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cycles_compare import (
     load_cycles_comparison, load_model_tables, pooled_ets, plot_ets_comparison,
-    plot_fss_comparison,
+    plot_fss_comparison, plot_rmse_comparison,
 )
 
 
@@ -95,3 +95,20 @@ def test_load_model_tables_parses_summary_numeric_fields(monkeypatch):
         missing = load_model_tables({"name": "HAFS-A",
                                      "cycles_yaml": root / "case.yaml"})
         assert missing["summary"] == []
+
+
+def test_plot_rmse_comparison_writes_inches_plot():
+    models = [
+        {"name": "HAFS-A", "summary": [
+            {"lead_hours_to_landfall": 48.0, "rmse": 25.4},
+            {"lead_hours_to_landfall": 24.0, "rmse": 50.8},
+        ]},
+        {"name": "HAFS-B", "summary": [
+            {"lead_hours_to_landfall": 48.0, "rmse": 38.1},
+            {"lead_hours_to_landfall": 24.0, "rmse": 63.5},
+        ]},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "rmse.png"
+        assert plot_rmse_comparison(models, "Test", output) is True
+        assert output.exists() and output.stat().st_size > 0

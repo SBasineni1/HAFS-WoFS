@@ -11,7 +11,8 @@ pytest.importorskip("sklearn")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml_features import FEATURE_COLUMNS, TARGET_COLUMNS
-from ml_regime import load_ml_config, run_ml, train_target
+from ml_regime import (filter_by_landfall_lead, load_ml_config, run_ml,
+                       train_target)
 
 
 def _block_shap(monkeypatch):
@@ -104,4 +105,19 @@ def test_load_ml_config_defaults(tmp_path):
         "out_dir": Path("analysis/output/ml_regime"),
         "targets": ["ets_headline", "fss_headline", "rmse"],
         "min_samples_warn": 30,
+        "min_lead_hours_to_landfall": None,
     }
+
+
+def test_filter_by_landfall_lead_only_changes_ml_rows():
+    rows = [
+        {"lead_hours_to_landfall": 48.0},
+        {"lead_hours_to_landfall": 18.0},
+        {"lead_hours_to_landfall": np.nan},
+        {"lead_hours_to_landfall": 24.0},
+    ]
+    X = np.arange(8, dtype=float).reshape(4, 2)
+    filtered_rows, filtered_X, dropped = filter_by_landfall_lead(rows, X, 24)
+    assert [row["lead_hours_to_landfall"] for row in filtered_rows] == [48.0, 24.0]
+    assert np.array_equal(filtered_X, X[[0, 3]])
+    assert dropped == 2

@@ -653,7 +653,6 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
     axes = [fig.add_subplot(grid[0, index])
             for index in range(len(thresholds))]
     cbar_ax = fig.add_subplot(grid[0, -1])
-    annotate = len(inits) * len(scales) <= 72
     fallback_image = None
     for index, (ax, threshold) in enumerate(zip(axes, thresholds)):
         lookup = {(r["init_dt"], r["scale_km"]): r["fss"] for r in rows
@@ -666,28 +665,18 @@ def plot_fss_leadtime(ccase, fss_rows, out_path):
             ax.set_facecolor("#eceff1")
             sns.heatmap(
                 values, ax=ax, cmap="mako", vmin=0.0, vmax=1.0,
-                mask=~np.isfinite(values), annot=annotate, fmt=".2f",
+                mask=~np.isfinite(values), annot=False,
                 linewidths=0.8, linecolor="white", square=False,
                 xticklabels=xlabels,
                 yticklabels=ylabels if index == 0 else False,
                 cbar=index == len(thresholds) - 1, cbar_ax=cbar_ax,
                 cbar_kws={"label": "Fractions Skill Score (FSS)"},
             )
-            for row, col in np.argwhere(~np.isfinite(values)):
-                ax.text(col + 0.5, row + 0.5, "—", ha="center",
-                        va="center", color="#7a7a7a", fontsize=9)
         else:
             fallback_image = ax.imshow(values, cmap="viridis", vmin=0.0,
                                        vmax=1.0, aspect="auto")
             ax.set_xticks(np.arange(len(inits)), labels=xlabels)
             ax.set_yticks(np.arange(len(scales)), labels=ylabels)
-            if annotate:
-                for row, col in np.argwhere(np.isfinite(values)):
-                    ax.text(col, row, f"{values[row, col]:.2f}",
-                            ha="center", va="center", fontsize=8)
-            for row, col in np.argwhere(~np.isfinite(values)):
-                ax.text(col, row, "—", ha="center", va="center",
-                        color="#7a7a7a", fontsize=9)
         unit = "inch" if np.isclose(threshold, 1.0) else "inches"
         ax.set_title(f"Rainfall ≥ {threshold:g} {unit}", fontsize=12,
                      fontweight="bold")
@@ -767,23 +756,34 @@ def _precipitation_error_scale(error_fields):
     return cmap, norm, ticks
 
 
+def representative_cycle_indices(cycle_count, max_panels=6):
+    """Evenly spaced cycle indices including the first and last cycles."""
+    if cycle_count <= 0 or max_panels <= 0:
+        return []
+    panel_count = min(int(max_panels), int(cycle_count))
+    return sorted(set(np.rint(np.linspace(
+        0, cycle_count - 1, panel_count)).astype(int)))
+
+
 def plot_error_maps(ccase, fields, out_path):
-    """Parent minus MRMS for representative early, middle, late cycles."""
+    """Parent minus MRMS for up to six evenly spaced representative cycles."""
     cycles_data = fields["cycles"]
-    indices = sorted(set((0, len(cycles_data) // 2, len(cycles_data) - 1)))
+    indices = representative_cycle_indices(len(cycles_data))
     selected = [cycles_data[index] for index in indices]
     errors = [(cycle["parent_win"]
               - _cycle_observation(cycle, fields, "MRMS")) / 25.4
               for cycle in selected]
     error_cmap, norm, error_ticks = _precipitation_error_scale(errors)
+    ncols = min(3, len(selected))
+    nrows = int(np.ceil(len(selected) / ncols))
     fig, axes = plt.subplots(
-        1, len(selected), figsize=(5.3 * len(selected), 4.8), squeeze=False,
+        nrows, ncols, figsize=(5.3 * ncols, 4.4 * nrows), squeeze=False,
         subplot_kw={"projection": ccrs.PlateCarree()})
+    flat_axes = axes.ravel()
     mesh = None
-    for col, cycle in enumerate(selected):
-        ax = axes[0, col]
+    for ax, cycle, error_field in zip(flat_axes, selected, errors):
         _map_context(ax, ccase)
-        error = np.where(fields["swath"], errors[col], np.nan)
+        error = np.where(fields["swath"], error_field, np.nan)
         mesh = ax.pcolormesh(fields["grid_lon"], fields["grid_lat"], error,
                              cmap=error_cmap, norm=norm, shading="auto",
                              transform=ccrs.PlateCarree())
@@ -793,7 +793,11 @@ def plot_error_maps(ccase, fields, out_path):
                    transform=ccrs.PlateCarree())
         ax.set_title(f"{cycle_label(ccase, cycle['init_dt'])}\n"
                      f"{cycle_window_label(cycle)}")
-    fig.colorbar(mesh, ax=axes, shrink=0.82, pad=0.02, ticks=error_ticks,
+    for ax in flat_axes[len(selected):]:
+        ax.set_visible(False)
+    visible_axes = list(flat_axes[:len(selected)])
+    fig.colorbar(mesh, ax=visible_axes, shrink=0.82, pad=0.02,
+                 ticks=error_ticks,
                  spacing="uniform",
                  label="Forecast − MRMS (inches; wider intervals at extremes)")
     fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} representative "
@@ -803,7 +807,7 @@ def plot_error_maps(ccase, fields, out_path):
 
 
 def animate_cycle_qpf(ccase, fields, out_path):
-    """Animate parent QPF, MRMS, and their difference across initializations."""
+    """Animate parent QPF and its MRMS error across initializations."""
     cycles_data = fields["cycles"]
     errors = [(cycle["parent_win"]
               - _cycle_observation(cycle, fields, "MRMS")) / 25.4
@@ -813,22 +817,23 @@ def animate_cycle_qpf(ccase, fields, out_path):
     qpf_norm = colors.BoundaryNorm(
         np.asarray(QPF_LEVELS, dtype=float) / 25.4, qpf_cmap_obj.N)
     projection = ccrs.PlateCarree()
-    fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.2),
+    fig, axes = plt.subplots(1, 2, figsize=(11.8, 5.4),
                              subplot_kw={"projection": projection})
     qpf_map = plt.cm.ScalarMappable(norm=qpf_norm, cmap=qpf_cmap_obj)
     err_map = plt.cm.ScalarMappable(norm=error_norm, cmap=error_cmap)
-    fig.colorbar(qpf_map, ax=axes[:2], shrink=0.72, pad=0.02,
+    fig.colorbar(qpf_map, ax=axes[0], shrink=0.76, pad=0.025,
                  label="Accumulated precipitation (inches)")
-    fig.colorbar(err_map, ax=axes[2], shrink=0.72, pad=0.02,
+    fig.colorbar(err_map, ax=axes[1], shrink=0.76, pad=0.025,
                  ticks=error_ticks, spacing="uniform",
                  label="Forecast − MRMS (inches; wider intervals at extremes)")
 
     def update(frame):
         cycle = cycles_data[frame]
-        mrms_win = _cycle_observation(cycle, fields, "MRMS")
-        panels = ((cycle["parent_win"] / 25.4, qpf_cmap_obj, qpf_norm, "Parent forecast"),
-                  (mrms_win / 25.4, qpf_cmap_obj, qpf_norm, "MRMS observed"),
-                  (errors[frame], error_cmap, error_norm, "Parent − MRMS"))
+        panels = (
+            (cycle["parent_win"] / 25.4, qpf_cmap_obj, qpf_norm,
+             "Parent forecast"),
+            (errors[frame], error_cmap, error_norm, "Parent − MRMS"),
+        )
         for ax, (data, cmap, norm, title) in zip(axes, panels):
             ax.clear()
             _map_context(ax, ccase)

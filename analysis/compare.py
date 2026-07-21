@@ -22,7 +22,7 @@ from scipy.interpolate import RegularGridInterpolator
 import yaml
 from ets_full import score_pair
 from ets_score import contingency_scores
-from skill_metrics import cell_area_km2, fractions_skill_score
+from skill_metrics import cell_area_km2, continuous_scores, fractions_skill_score
 from hafs_case import from_yaml, position_on_track
 from best_track import parse_bdeck, parse_bdeck_fixes
 from skill_metrics import swath_from_track
@@ -98,6 +98,31 @@ def score_matrix(models, swath, thresholds, fss_scales, grid_res):
                             "fss": fractions_skill_score(ff, oo, thr, sc, common),
                         })
     return cat_rows, fss_rows
+
+
+def continuous_matrix(models, swath):
+    """Continuous scores on one common model/observation footprint per pair."""
+    output = []
+    fnames = list(models[0]["forecasts"].keys())
+    onames = list(models[0]["obs"].keys())
+    for fname in fnames:
+        for oname in onames:
+            ogrids = [model["obs"].get(oname) for model in models]
+            if any(grid is None for grid in ogrids):
+                continue
+            common = np.asarray(swath, dtype=bool).copy()
+            for model in models:
+                common &= np.isfinite(model["forecasts"][fname])
+            for grid in ogrids:
+                common &= np.isfinite(grid)
+            for model in models:
+                scores = continuous_scores(
+                    model["forecasts"][fname][common],
+                    model["obs"][oname][common],
+                )
+                output.append({"model": model["name"], "forecast": fname,
+                               "observation": oname, **scores})
+    return output
 
 
 # Distinct color per model, assigned dynamically so colors appear regardless of
@@ -185,6 +210,43 @@ def plot_fss_compare(fss_rows, label, out_path, observation="MRMS",
                  f"({forecast} vs {observation})")
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_rmse_compare(rows, label, out_path):
+    """Grouped common-footprint RMSE bars for each forecast/observation pair."""
+    pairs = sorted({(row["forecast"], row["observation"]) for row in rows})
+    models = sorted({row["model"] for row in rows})
+    fig, ax = plt.subplots(figsize=(max(8.5, 2.0 * len(pairs) + 3.5), 6))
+    x = np.arange(len(pairs), dtype=float)
+    width = 0.78 / max(len(models), 1)
+    colors = _model_colors(models)
+    for index, model in enumerate(models):
+        values = []
+        for forecast, observation in pairs:
+            row = next((item for item in rows
+                        if item["model"] == model
+                        and item["forecast"] == forecast
+                        and item["observation"] == observation), None)
+            values.append(inches(row["rmse"]) if row is not None else np.nan)
+        offset = (index - (len(models) - 1) / 2) * width
+        bars = ax.bar(x + offset, values, width * 0.9, color=colors[model],
+                      label=model)
+        for bar, value in zip(bars, values):
+            if np.isfinite(value):
+                ax.annotate(f"{value:.2f}",
+                            (bar.get_x() + bar.get_width() / 2, value),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x, [f"{forecast}\nvs {observation}"
+                      for forecast, observation in pairs])
+    ax.set_ylabel("Storm-total RMSE (inches)")
+    ax.set_title(f"{label}\nContinuous rainfall error on the common footprint",
+                 loc="left")
+    ax.grid(axis="y", ls=":", alpha=0.45)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
@@ -586,6 +648,7 @@ def _init_tag(label, init_dt):
 _CAT_NUM = ("threshold", "a", "b", "c", "d", "ets", "csi", "bias",
             "pod", "far", "hss")
 _FSS_NUM = ("threshold", "scale_cells", "scale_km", "fss")
+_CONT_NUM = ("n", "rmse", "mae", "bias", "r")
 
 
 def _read_rows(path, numeric):
@@ -617,6 +680,11 @@ def _plot_comparison(out_dir, slug, title, fss_plot_thresholds):
     plot_performance_diagram(cat_rows, title,
                              out_dir / f"compare_performance_{slug}.png",
                              observation="MRMS", forecast="parent")
+    continuous_path = out_dir / f"compare_continuous_{slug}.csv"
+    if continuous_path.exists():
+        continuous_rows = _read_rows(continuous_path, _CONT_NUM)
+        plot_rmse_compare(continuous_rows, title,
+                          out_dir / f"compare_rmse_{slug}.png")
 
 
 def replot_from_csv(cfg):
@@ -631,6 +699,9 @@ def replot_from_csv(cfg):
     _plot_comparison(cfg["out_dir"], slug, title, cfg["fss_plot_thresholds"])
     print(f"Replotted: {cfg['out_dir']}/compare_categorical_{slug}.png")
     print(f"Replotted: {cfg['out_dir']}/compare_fss_{slug}.png")
+    rmse_path = cfg["out_dir"] / f"compare_rmse_{slug}.png"
+    if rmse_path.exists():
+        print(f"Replotted: {rmse_path}")
 
 
 def _build_model_fields(case, grid_lat, grid_lon, max_fhour):
@@ -687,10 +758,13 @@ def generate_comparison(cfg):
     models = [_build_model_fields(c, grid_lat, grid_lon, max_fhour) for c in cases]
     cat_rows, fss_rows = score_matrix(models, swath, thresholds,
                                       cfg["fss_scales_cells"], a.grid_res)
+    continuous_rows = continuous_matrix(models, swath)
 
     for r in cat_rows:
         r["init"] = init_str
     for r in fss_rows:
+        r["init"] = init_str
+    for r in continuous_rows:
         r["init"] = init_str
 
     out_dir = cfg["out_dir"]
@@ -712,9 +786,19 @@ def generate_comparison(cfg):
         w.writeheader()
         w.writerows(fss_rows)
 
+    continuous_cols = ["init", "model", "forecast", "observation", "n",
+                       "rmse", "mae", "bias", "r"]
+    continuous_csv = out_dir / f"compare_continuous_{slug}.csv"
+    with open(continuous_csv, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=continuous_cols,
+                           extrasaction="ignore")
+        w.writeheader()
+        w.writerows(continuous_rows)
+
     cat_png = out_dir / f"compare_categorical_{slug}.png"
     fss_png = out_dir / f"compare_fss_{slug}.png"
     perf_png = out_dir / f"compare_performance_{slug}.png"
+    rmse_png = out_dir / f"compare_rmse_{slug}.png"
     storm_total_png = out_dir / f"compare_storm_total_{slug}.png"
     plot_categorical_compare(cat_rows, title, cat_png, observation="MRMS")
     plot_fss_compare(fss_rows, title, fss_png, observation="MRMS",
@@ -722,6 +806,7 @@ def generate_comparison(cfg):
                      plot_thresholds=tuple(cfg["fss_plot_thresholds"]))
     plot_performance_diagram(cat_rows, title, perf_png, observation="MRMS",
                              forecast="parent")
+    plot_rmse_compare(continuous_rows, title, rmse_png)
     # Storm-total maps need the 2-D total fields, so they are drawn here (not in
     # replot, which only has the CSVs). MRMS is identical across models (shared
     # window), so take it from the first.
@@ -747,9 +832,11 @@ def generate_comparison(cfg):
 
     print(f"\nSaved: {cat_csv}")
     print(f"Saved: {fss_csv}")
+    print(f"Saved: {continuous_csv}")
     print(f"Saved: {cat_png}")
     print(f"Saved: {fss_png}")
     print(f"Saved: {perf_png}")
+    print(f"Saved: {rmse_png}")
     print(f"Saved: {storm_total_png}")
     if storm_rel_png is not None:
         print(f"Saved: {storm_rel_png}")
@@ -762,3 +849,8 @@ def generate_comparison(cfg):
                     and r["forecast"] == "parent" and r["observation"] == "MRMS"
                     and r["threshold"] == 50), float("nan"))
         print(f"  {mdl}: ETS25={e25:.3f}  ETS50={e50:.3f}")
+    print("\nRMSE (parent vs MRMS):")
+    for row in continuous_rows:
+        if row["forecast"] == "parent" and row["observation"] == "MRMS":
+            print(f"  {row['model']}: {inches(row['rmse']):.2f} in "
+                  f"(n={row['n']:,})")

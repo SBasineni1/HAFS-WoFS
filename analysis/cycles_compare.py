@@ -16,7 +16,7 @@ import numpy as np
 import yaml
 
 from hafs_case import cycles_from_yaml
-from plot_units import miles
+from plot_units import inches, miles
 
 
 MODEL_COLORS = {
@@ -284,6 +284,41 @@ def plot_track_error_comparison(models, label, out_path):
     plt.close(fig)
 
 
+def plot_rmse_comparison(models, label, out_path):
+    """Storm-total RMSE versus initialization lead for each model."""
+    fig, ax = plt.subplots(figsize=(9, 6))
+    have_data = False
+    for index, model in enumerate(models):
+        lead, rmse = _finite_summary_pairs(
+            model["summary"], "lead_hours_to_landfall", "rmse")
+        if len(lead) == 0:
+            continue
+        have_data = True
+        order = np.argsort(lead)
+        rmse_in = inches(rmse[order])
+        mean_in = float(np.mean(rmse_in))
+        ax.plot(lead[order], rmse_in, marker="o", lw=2.2,
+                color=MODEL_COLORS.get(model["name"], plt.cm.Set2(index)),
+                label=f"{model['name']} · mean {mean_in:.2f} in")
+    if not have_data:
+        plt.close(fig)
+        return False
+    ax.set_xlabel("Hours before landfall (forecast initialization)")
+    ax.set_ylabel("Storm-total RMSE (inches)")
+    ax.invert_xaxis()
+    ax.grid(True, ls=":", alpha=0.45)
+    ax.legend(frameon=False)
+    ax.set_title(
+        f"{label}\nRainfall RMSE by forecast-cycle lead · "
+        "matching init-clipped windows", loc="left")
+    ax.text(1.0, 1.015, "Lower is better", transform=ax.transAxes,
+            ha="right", color="#607080", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return True
+
+
 def plot_track_precip_comparison(models, label, out_path):
     """Pooled model-colored track-error versus headline ETS scatter."""
     fig, ax = plt.subplots(figsize=(8.5, 6))
@@ -400,6 +435,7 @@ def generate_cycles_comparison(config):
     print(f"Saved plot : {fss_path}")
     if any(model["summary"] for model in models):
         summary_plots = [
+            ("cycles_compare_rmse.png", plot_rmse_comparison),
             ("cycles_compare_track_error.png", plot_track_error_comparison),
             ("cycles_compare_track_precip.png", plot_track_precip_comparison),
             ("cycles_compare_shifted_ets.png", plot_shifted_ets_comparison),

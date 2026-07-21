@@ -8,8 +8,9 @@ import csv
 import types
 from datetime import datetime
 import numpy as np
-from compare import (load_comparison, score_matrix, plot_categorical_compare,
-                     plot_fss_compare, _model_colors, replot_from_csv,
+from compare import (continuous_matrix, load_comparison, score_matrix,
+                     plot_categorical_compare, plot_fss_compare,
+                     plot_rmse_compare, _model_colors, replot_from_csv,
                      _check_same_init, _init_tag, _plot_comparison)
 
 
@@ -104,6 +105,16 @@ def test_plot_comparison_writes_init_tagged_pngs():
                 "a", "b", "c", "d", "ets", "csi", "bias", "pod", "far", "hss"]
     fss_cols = ["init", "model", "forecast", "observation", "threshold",
                 "scale_cells", "scale_km", "fss"]
+    continuous = [
+        {"init": "2024092400", "model": "HAFS-A", "forecast": "parent",
+         "observation": "MRMS", "n": 100, "rmse": 25.4, "mae": 20.0,
+         "bias": 2.0, "r": 0.8},
+        {"init": "2024092400", "model": "HAFS-B", "forecast": "parent",
+         "observation": "MRMS", "n": 100, "rmse": 50.8, "mae": 40.0,
+         "bias": 4.0, "r": 0.7},
+    ]
+    continuous_cols = ["init", "model", "forecast", "observation", "n",
+                       "rmse", "mae", "bias", "r"]
     for r in cat:
         r["init"] = "2024092400"
     for r in fss:
@@ -114,11 +125,15 @@ def test_plot_comparison_writes_init_tagged_pngs():
     with open(d / f"compare_fss_{slug}.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fss_cols, extrasaction="ignore")
         w.writeheader(); w.writerows(fss)
+    with open(d / f"compare_continuous_{slug}.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=continuous_cols)
+        w.writeheader(); w.writerows(continuous)
     from compare import _plot_comparison
     _plot_comparison(d, slug, "Hurricane Helene (init 2024-09-24 00Z)", [25, 50])
     assert (d / f"compare_categorical_{slug}.png").stat().st_size > 0
     assert (d / f"compare_fss_{slug}.png").stat().st_size > 0
     assert (d / f"compare_performance_{slug}.png").stat().st_size > 0
+    assert (d / f"compare_rmse_{slug}.png").stat().st_size > 0
 
 
 def test_score_matrix_common_n_across_models_when_footprints_differ():
@@ -137,16 +152,42 @@ def test_score_matrix_common_n_across_models_when_footprints_differ():
     assert na == nb == 24   # intersection = rows 0-3 = 24 cells
 
 
+def test_continuous_matrix_uses_common_footprint_and_computes_rmse():
+    obs = np.full((3, 3), 10.0)
+    a_grid = np.full((3, 3), 12.0)
+    b_grid = np.full((3, 3), 14.0)
+    a_grid[2, :] = np.nan
+    models = [
+        {"name": "HAFS-A", "forecasts": {"parent": a_grid},
+         "obs": {"MRMS": obs}},
+        {"name": "HAFS-B", "forecasts": {"parent": b_grid},
+         "obs": {"MRMS": obs}},
+    ]
+    rows = continuous_matrix(models, np.ones((3, 3), dtype=bool))
+    by_model = {row["model"]: row for row in rows}
+    assert by_model["HAFS-A"]["n"] == by_model["HAFS-B"]["n"] == 6
+    assert by_model["HAFS-A"]["rmse"] == 2.0
+    assert by_model["HAFS-B"]["rmse"] == 4.0
+
+
 def test_plots_write_png_files():
     cat, fss = _toy_rows()
     d = Path(tempfile.mkdtemp())
     cat_png = d / "cat.png"
     fss_png = d / "fss.png"
+    rmse_png = d / "rmse.png"
     plot_categorical_compare(cat, "Test", cat_png, observation="MRMS")
     plot_fss_compare(fss, "Test", fss_png, observation="MRMS",
                      forecast="parent", plot_thresholds=(5.0, 25.0))
+    plot_rmse_compare([
+        {"model": "HAFS-A", "forecast": "parent", "observation": "MRMS",
+         "n": 20, "rmse": 25.4, "mae": 20.0, "bias": 2.0, "r": 0.8},
+        {"model": "HAFS-B", "forecast": "parent", "observation": "MRMS",
+         "n": 20, "rmse": 50.8, "mae": 40.0, "bias": 3.0, "r": 0.7},
+    ], "Test", rmse_png)
     assert cat_png.exists() and cat_png.stat().st_size > 0
     assert fss_png.exists() and fss_png.stat().st_size > 0
+    assert rmse_png.exists() and rmse_png.stat().st_size > 0
 
 
 def test_init_tag_appends_and_formats():
