@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cycles_compare import (
     load_cycles_comparison, load_model_tables, pooled_ets, plot_ets_comparison,
     plot_fss_comparison, plot_rmse_comparison,
+    trim_trailing_empty_ets_thresholds,
 )
 
 
@@ -42,6 +43,19 @@ def test_pooled_ets_converts_inches_and_sums_cycles():
     result = pooled_ets(rows, [2])[0]
     assert result["n_cycles"] == 2
     assert abs(result["ets"] - 0.24528301886792447) < 1e-12
+
+
+def test_trim_trailing_empty_ets_thresholds_keeps_last_active_value():
+    rows = [
+        {"init": "2024092400", "forecast": "parent", "observation": "MRMS",
+         "threshold": str(threshold * 25.4),
+         "a": "4" if threshold <= 4 else "1", "b": "1",
+         "c": "2" if threshold <= 4 else "1",
+         "d": "3" if threshold <= 4 else "1"}
+        for threshold in (2, 4, 6, 8)
+    ]
+    models = [{"name": "HAFS-A", "categorical": rows}]
+    assert trim_trailing_empty_ets_thresholds(models, [2, 4, 6, 8]) == [2, 4]
 
 
 def test_comparison_plots_allow_missing_model():

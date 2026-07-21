@@ -124,8 +124,22 @@ def pooled_ets(rows, thresholds_in):
     return output
 
 
+def trim_trailing_empty_ets_thresholds(models, thresholds_in):
+    """Drop only trailing thresholds with zero or unavailable ETS everywhere."""
+    thresholds = list(thresholds_in)
+    last_active = None
+    for index, threshold in enumerate(thresholds):
+        scores = [pooled_ets(model["categorical"], [threshold])[0]["ets"]
+                  for model in models]
+        if any(np.isfinite(score) and not np.isclose(score, 0.0)
+               for score in scores):
+            last_active = index
+    return thresholds if last_active is None else thresholds[:last_active + 1]
+
+
 def plot_ets_comparison(models, thresholds_in, label, out_path):
     """Tasteful grouped ETS bars for all configured models."""
+    thresholds_in = trim_trailing_empty_ets_thresholds(models, thresholds_in)
     x = np.arange(len(thresholds_in))
     width = min(0.24, 0.78 / max(len(models), 1))
     fig, ax = plt.subplots(figsize=(13.2, 6.6))
