@@ -343,7 +343,7 @@ def cycles_caveat(fields, ccase):
 
 
 def plot_metrics(ccase, results, out_path, caveat=""):
-    """Continuous skill and headline ETS versus initialization/landfall lead.
+    """RMSE and bias versus initialization/landfall lead.
 
     results: list of dicts {init_str, init_dt, forecast, observation,
     cont, rows} — one per cycle x pair.
@@ -352,11 +352,10 @@ def plot_metrics(ccase, results, out_path, caveat=""):
     inits = sorted({r["init_dt"] for r in results})
     pairs = sorted({(r["forecast"], r["observation"]) for r in results},
                    key=lambda p: (p[1], p[0]))
-    thr = ccase.ets_threshold_mm
     use_lead = ccase.landfall_time is not None
     x = ([hours_before_landfall(ccase, init_dt) for init_dt in inits]
          if use_lead else inits)
-    fig, axes = plt.subplots(4, 1, figsize=(10.5, 12), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(10.5, 7.2), sharex=True)
 
     def series(fname, oname, getter):
         by_init = {r["init_dt"]: r for r in results
@@ -364,17 +363,9 @@ def plot_metrics(ccase, results, out_path, caveat=""):
         return [getter(by_init[i]) if i in by_init else np.nan
                 for i in inits]
 
-    def ets_at(res):
-        for row in res["rows"]:
-            if row["threshold"] == thr:
-                return row["ets"]
-        return np.nan
-
     panels = [
         (axes[0], lambda res: inches(res["cont"]["rmse"]), "RMSE (inches)"),
         (axes[1], lambda res: inches(res["cont"]["bias"]), "bias (inches)"),
-        (axes[2], lambda res: res["cont"]["r"], "Pearson correlation"),
-        (axes[3], ets_at, f"ETS @ {format_inches(thr)} in"),
     ]
     for ax, getter, label in panels:
         for fname, oname in pairs:
@@ -399,7 +390,8 @@ def plot_metrics(ccase, results, out_path, caveat=""):
                                  rotation=45, ha="right")
         landfall_text = ""
     fig.suptitle(
-        f"{ccase.storm_name} — {ccase.model_label} QPF by initialization\n"
+        f"{ccase.storm_name} — {ccase.model_label} continuous QPF errors "
+        "by initialization\n"
         f"start = later of {ccase.valid_start:%Y-%m-%d %HZ} or init; "
         f"end = {ccase.valid_end:%Y-%m-%d %HZ} | union TC swath "
         f"≤{miles(ccase.mask_radius_km):.0f} miles{landfall_text}")

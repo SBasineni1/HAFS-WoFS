@@ -385,6 +385,7 @@ def plot_track_error(track_rows_by_init, ccase, out_path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     _plot_theme()
     inits = sorted(track_rows_by_init)
@@ -401,10 +402,10 @@ def plot_track_error(track_rows_by_init, ccase, out_path):
                      marker="o", lw=1.8, label=label)
         axes[1].plot(valid, [miles(r["along_km"]) for r in rows],
                      color=colors[init],
-                     lw=1.8, label=f"{label} along")
+                     lw=1.8)
         axes[1].plot(valid, [miles(r["cross_km"]) for r in rows],
                      color=colors[init],
-                     ls="--", lw=1.8, label=f"{label} cross")
+                     ls="--", lw=1.8)
         axes[2].plot(valid, [r["vmax_err_kt"] for r in rows], color=colors[init],
                      marker="o", lw=1.8, label=label)
     axes[0].set_ylabel("Position error (miles)")
@@ -414,7 +415,12 @@ def plot_track_error(track_rows_by_init, ccase, out_path):
     axes[1].axhline(0, color="gray", ls=":", lw=0.8)
     axes[2].axhline(0, color="gray", ls=":", lw=0.8)
     axes[0].legend(fontsize=8, ncol=2)
-    axes[1].legend(fontsize=7, ncol=2)
+    direction_key = [
+        Line2D([], [], color="#333333", lw=2, ls="-", label="Along-track"),
+        Line2D([], [], color="#333333", lw=2, ls="--", label="Cross-track"),
+    ]
+    axes[1].legend(handles=direction_key, loc="upper center", ncol=2,
+                   fontsize=8, frameon=True)
     for ax in axes:
         ax.grid(True, ls=":", alpha=0.4)
     fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} track skill by initialization")
