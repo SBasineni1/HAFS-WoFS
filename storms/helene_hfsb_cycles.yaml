@@ -9,7 +9,7 @@ domain: [15.0, 42.0, -100.0, -60.0]
 mask_radius_km: 500
 out_dir: analysis/output/helene_hfsb_cycles
 # inits: [2024092400, 2024092412]  # optional override of auto-discovery
-thresholds_mm: [25.4, 50.8, 76.2, 101.6, 127.0, 152.4, 177.8, 203.2, 228.6, 254.0]
+thresholds_mm: [2.54, 6.35, 12.7, 25.4, 50.8, 76.2, 101.6, 127.0, 177.8, 254.0]
 ets_threshold_mm: 25.4
 ets_bar_thresholds_in: [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24]
 # fss_thresholds_mm: [25, 50]

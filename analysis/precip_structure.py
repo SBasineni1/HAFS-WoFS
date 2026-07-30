@@ -21,6 +21,18 @@ OBJECT_FIELDS = (
     "obj_max_ratio",
 )
 
+_PLOT_TYPOGRAPHY = {
+    "font.weight": "bold",
+    "axes.titleweight": "bold",
+    "axes.labelweight": "bold",
+    "figure.titleweight": "bold",
+}
+
+
+def _apply_plot_typography():
+    """Keep cycle-structure text consistently bold and legible."""
+    plt.rcParams.update(_PLOT_TYPOGRAPHY)
+
 
 def _nan_dict(keys):
     return {key: np.nan for key in keys}
@@ -109,6 +121,7 @@ def _format_cycle_axis(ax, ccase, inits, x):
 
 def plot_distributions(ccase, fields, out_path):
     """Plot pooled PDF/CDF and per-cycle plus pooled forecast-MRMS Q-Q."""
+    _apply_plot_typography()
     cycles = fields["cycles"]
     swath = fields["swath"]
     sources = [
@@ -180,6 +193,7 @@ def plot_distributions(ccase, fields, out_path):
 
 def plot_percentiles_by_cycle(ccase, summary_rows, out_path):
     """Plot upper percentiles and precipitation volume by cycle."""
+    _apply_plot_typography()
     rows = [row for row in summary_rows
             if any(np.isfinite(row.get(key, np.nan))
                    for key in ("fcst_p90", "obs_p90", "fcst_volume_km3",
@@ -223,6 +237,7 @@ def plot_percentiles_by_cycle(ccase, summary_rows, out_path):
 
 def plot_pattern_r(ccase, summary_rows, out_path):
     """Plot unshifted and optional track-shifted pattern correlation."""
+    _apply_plot_typography()
     rows = [row for row in summary_rows
             if (np.isfinite(row.get("pattern_r", np.nan))
                 or np.isfinite(row.get("pattern_r_shifted", np.nan)))]
@@ -355,6 +370,7 @@ def object_comparison(fcst, obs, swath, grid_lat, grid_lon, threshold_mm,
 
 def plot_objects(ccase, summary_rows, out_path):
     """Plot object areas/ratios and centroid displacement components."""
+    _apply_plot_typography()
     rows = [row for row in summary_rows
             if any(np.isfinite(row.get(key, np.nan)) for key in OBJECT_FIELDS)]
     if not rows:

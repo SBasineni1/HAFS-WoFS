@@ -372,12 +372,20 @@ def plot_track_precip(summary_rows, ccase, out_path):
 
 
 def _plot_theme():
+    typography = {
+        "font.weight": "bold",
+        "axes.titleweight": "bold",
+        "axes.labelweight": "bold",
+        "figure.titleweight": "bold",
+    }
     try:
         import seaborn as sns
-        sns.set_theme(context="notebook", style="whitegrid", font_scale=1.0)
+        sns.set_theme(context="notebook", style="whitegrid", font_scale=1.0,
+                      rc=typography)
     except ImportError:
         import matplotlib.pyplot as plt
         plt.style.use("seaborn-v0_8-whitegrid")
+        plt.rcParams.update(typography)
 
 
 def plot_track_error(track_rows_by_init, ccase, out_path):

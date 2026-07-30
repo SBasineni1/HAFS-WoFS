@@ -277,12 +277,22 @@ def build_cycle_fields(ccase):
 # Scoring + outputs
 # =============================================================================
 
+_PLOT_TYPOGRAPHY = {
+    "font.weight": "bold",
+    "axes.titleweight": "bold",
+    "axes.labelweight": "bold",
+    "figure.titleweight": "bold",
+}
+
+
 def _plot_theme():
     """Use seaborn when available while retaining a dependency-light fallback."""
     if sns is not None:
-        sns.set_theme(context="notebook", style="whitegrid", font_scale=1.0)
+        sns.set_theme(context="notebook", style="whitegrid", font_scale=1.0,
+                      rc=_PLOT_TYPOGRAPHY)
     else:
         plt.style.use("seaborn-v0_8-whitegrid")
+        plt.rcParams.update(_PLOT_TYPOGRAPHY)
 
 
 def _inches_to_mm(value):
@@ -741,12 +751,14 @@ def _animate_cycle_field(ccase, fields, out_path, data_by_cycle, cmap, norm,
     """Animate one cycle field so each GIF remains readable on its own."""
     cycles_data = fields["cycles"]
     projection = ccrs.PlateCarree()
-    fig, ax = plt.subplots(figsize=(6.7, 5.7),
+    fig, ax = plt.subplots(figsize=(7.6, 5.8),
                            subplot_kw={"projection": projection})
+    fig.subplots_adjust(left=0.06, right=0.82, bottom=0.08, top=0.76)
     colorbar_kwargs = {
         "ax": ax,
-        "shrink": 0.78,
-        "pad": 0.025,
+        "shrink": 0.94,
+        "fraction": 0.052,
+        "pad": 0.035,
         "label": colorbar_label,
     }
     if colorbar_ticks is not None:
@@ -754,7 +766,10 @@ def _animate_cycle_field(ccase, fields, out_path, data_by_cycle, cmap, norm,
     if colorbar_spacing is not None:
         colorbar_kwargs["spacing"] = colorbar_spacing
     scalar_map = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    fig.colorbar(scalar_map, **colorbar_kwargs)
+    colorbar = fig.colorbar(scalar_map, **colorbar_kwargs)
+    colorbar.ax.tick_params(labelsize=10, pad=5)
+    colorbar.set_label(colorbar_label, fontsize=11, fontweight="bold",
+                       labelpad=12)
 
     def update(frame):
         cycle = cycles_data[frame]
@@ -768,10 +783,13 @@ def _animate_cycle_field(ccase, fields, out_path, data_by_cycle, cmap, norm,
                    fields["swath"].astype(float), levels=[0.5],
                    colors="#333333", linewidths=0.7,
                    transform=projection)
-        ax.set_title(panel_title)
-        fig.suptitle(f"{ccase.storm_name} — {ccase.model_label} · "
-                     f"{cycle_label(ccase, cycle['init_dt']).replace(chr(10), ' · ')}"
-                     f" · {cycle_window_label(cycle)}")
+        ax.set_title(panel_title, fontsize=13, fontweight="bold", pad=6)
+        init_label = cycle_label(ccase, cycle["init_dt"]).replace(
+            "\n", " · ")
+        fig.suptitle(
+            f"{ccase.storm_name} — {ccase.model_label}\n"
+            f"{init_label} | {cycle_window_label(cycle)}",
+            fontsize=13, fontweight="bold", linespacing=1.35, y=0.97)
         return (ax,)
 
     movie = animation.FuncAnimation(fig, update, frames=len(cycles_data),
@@ -789,7 +807,7 @@ def animate_cycle_qpf(ccase, fields, out_path):
                  for cycle in fields["cycles"]]
     _animate_cycle_field(
         ccase, fields, out_path, forecasts, qpf_cmap_obj, qpf_norm,
-        "Accumulated precipitation (inches)", "Parent forecast")
+        "Accumulated Precipitation (in)", "Parent Forecast")
 
 
 def animate_cycle_difference(ccase, fields, out_path):
@@ -800,7 +818,7 @@ def animate_cycle_difference(ccase, fields, out_path):
     error_cmap, error_norm, error_ticks = _precipitation_error_scale(errors)
     _animate_cycle_field(
         ccase, fields, out_path, errors, error_cmap, error_norm,
-        "Forecast − MRMS (inches; wider intervals at extremes)",
+        "Forecast − MRMS (in)",
         "Parent − MRMS", colorbar_ticks=error_ticks,
         colorbar_spacing="uniform")
 
@@ -816,7 +834,7 @@ def animate_cycle_observed(ccase, fields, out_path):
     ]
     _animate_cycle_field(
         ccase, fields, out_path, observations, qpf_cmap_obj, qpf_norm,
-        "Accumulated precipitation (inches)", "MRMS observed")
+        "Accumulated Precipitation (in)", "MRMS Observed")
 
 
 def compute_cycles(ccase, fields=None):
