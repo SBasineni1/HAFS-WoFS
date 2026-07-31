@@ -595,14 +595,17 @@ def test_precipitation_error_levels_widen_beyond_two_inches():
     high_steps = np.diff(positive[positive >= 2.0])
     assert np.all(high_steps[1:] >= high_steps[:-1])
     assert 24.0 in positive
-    assert np.allclose(positive, np.rint(positive))
+    assert 0.1 in positive and 0.25 in positive and 0.5 in positive
 
 
-def test_animation_qpf_levels_are_whole_inches():
+def test_animation_qpf_levels_preserve_native_subinch_detail():
+    from hafs_common import QPF_LEVELS
     from cycles import _ANIMATION_QPF_LEVELS_IN
 
     assert np.allclose(_ANIMATION_QPF_LEVELS_IN,
-                       np.rint(_ANIMATION_QPF_LEVELS_IN))
+                       np.asarray(QPF_LEVELS, dtype=float) / 25.4)
+    assert np.any((_ANIMATION_QPF_LEVELS_IN > 0)
+                  & (_ANIMATION_QPF_LEVELS_IN < 0.5))
 
 
 def _run_all():

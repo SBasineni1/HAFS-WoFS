@@ -26,7 +26,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib import animation, colors
+from matplotlib import animation, colors, ticker
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
@@ -320,16 +320,18 @@ def hours_before_landfall(ccase, init_dt):
 
 
 def cycle_label(ccase, init_dt):
-    """Compact initialization label used by the cycle plots."""
-    return init_dt.strftime("%m-%d %HZ")
+    """Compact cycle label with optional landfall-relative lead time."""
+    lead = hours_before_landfall(ccase, init_dt)
+    if lead is None:
+        return init_dt.strftime("%m-%d %HZ")
+    return f"{init_dt:%m-%d %HZ}\n{lead:.0f} h pre-LF"
 
 
-# The animation scale uses native inch thresholds, not converted metric ones.
-# Keep the project's own QPF palette; this is intentionally not the WPC scale.
-_ANIMATION_QPF_LEVELS_IN = np.asarray(
-    [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0,
-     10.0, 12.0, 16.0, 18.0, 20.0],
-    dtype=float,
+# Preserve every native QPF color boundary, including the 0.2- and 0.4-inch
+# bands that carry important swath detail. Only the displayed tick text is
+# rounded to friendly inch values.
+_ANIMATION_QPF_LEVELS_IN = (
+    np.asarray(QPF_LEVELS, dtype=float) / 25.4
 )
 
 
@@ -709,7 +711,8 @@ def _map_context(ax, ccase):
 
 
 _BASE_ERROR_LEVELS_IN = np.asarray(
-    [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
+    [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0,
+     3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
     dtype=float,
 )
 
@@ -717,10 +720,10 @@ _BASE_ERROR_LEVELS_IN = np.asarray(
 def precipitation_error_levels(error_fields):
     """Symmetric nonlinear inch bounds for forecast-minus-observation maps.
 
-    The base scale is whole-inch throughout. Above two inches, each successive
+    Small errors receive fine color steps. Above two inches, each successive
     bin widens so unusually large tropical-cyclone rainfall errors remain on
-    the scale. It reaches 24 inches and grows with whole-inch steps when a
-    field exceeds that range.
+    the scale without sacrificing detail near zero. The base scale reaches
+    24 inches and grows geometrically when a field exceeds that range.
     """
     positive = list(_BASE_ERROR_LEVELS_IN)
     finite = [np.abs(np.asarray(field, dtype=float)[np.isfinite(field)])
@@ -739,7 +742,7 @@ def _precipitation_error_scale(error_fields):
     levels = precipitation_error_levels(error_fields)
     cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
     norm = colors.BoundaryNorm(levels, cmap.N)
-    preferred = np.asarray([0.0, 1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
+    preferred = np.asarray([0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
     positive = levels[levels >= 0]
     ticks = [value for value in preferred
              if np.any(np.isclose(positive, value))]
@@ -773,6 +776,13 @@ def _animate_cycle_field(ccase, fields, out_path, data_by_cycle, cmap, norm,
     scalar_map = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
     colorbar = fig.colorbar(scalar_map, **colorbar_kwargs)
     colorbar.ax.tick_params(labelsize=10, pad=5)
+    colorbar.ax.yaxis.set_major_formatter(ticker.FuncFormatter(
+        lambda value, _: (
+            f"{int(round(value))}"
+            if np.isclose(value, round(value), atol=0.03)
+            else (f"{value:.1f}" if abs(value) < 1.0 else f"{value:.0f}")
+        )
+    ))
     colorbar.set_label(colorbar_label, fontsize=11, fontweight="bold",
                        labelpad=12)
 
@@ -799,7 +809,7 @@ def _animate_cycle_field(ccase, fields, out_path, data_by_cycle, cmap, norm,
 
     movie = animation.FuncAnimation(fig, update, frames=len(cycles_data),
                                     interval=1200, repeat=True, blit=False)
-    movie.save(out_path, writer=animation.PillowWriter(fps=1), dpi=110)
+    movie.save(out_path, writer=animation.PillowWriter(fps=1), dpi=140)
     plt.close(fig)
 
 
@@ -812,7 +822,9 @@ def animate_cycle_qpf(ccase, fields, out_path):
                  for cycle in fields["cycles"]]
     _animate_cycle_field(
         ccase, fields, out_path, forecasts, qpf_cmap_obj, qpf_norm,
-        "Accumulated Precipitation (in)", "Parent Forecast")
+        "Accumulated Precipitation (in)", "Parent Forecast",
+        colorbar_ticks=_ANIMATION_QPF_LEVELS_IN,
+        colorbar_spacing="uniform")
 
 
 def animate_cycle_difference(ccase, fields, out_path):
@@ -839,7 +851,9 @@ def animate_cycle_observed(ccase, fields, out_path):
     ]
     _animate_cycle_field(
         ccase, fields, out_path, observations, qpf_cmap_obj, qpf_norm,
-        "Accumulated Precipitation (in)", "MRMS Observed")
+        "Accumulated Precipitation (in)", "MRMS Observed",
+        colorbar_ticks=_ANIMATION_QPF_LEVELS_IN,
+        colorbar_spacing="uniform")
 
 
 def compute_cycles(ccase, fields=None):
