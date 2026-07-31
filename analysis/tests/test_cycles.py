@@ -595,6 +595,14 @@ def test_precipitation_error_levels_widen_beyond_two_inches():
     high_steps = np.diff(positive[positive >= 2.0])
     assert np.all(high_steps[1:] >= high_steps[:-1])
     assert 24.0 in positive
+    assert np.allclose(positive, np.rint(positive))
+
+
+def test_animation_qpf_levels_are_whole_inches():
+    from cycles import _ANIMATION_QPF_LEVELS_IN
+
+    assert np.allclose(_ANIMATION_QPF_LEVELS_IN,
+                       np.rint(_ANIMATION_QPF_LEVELS_IN))
 
 
 def _run_all():

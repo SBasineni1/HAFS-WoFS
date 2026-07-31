@@ -320,11 +320,17 @@ def hours_before_landfall(ccase, init_dt):
 
 
 def cycle_label(ccase, init_dt):
-    """Compact cycle label with optional landfall-relative lead time."""
-    lead = hours_before_landfall(ccase, init_dt)
-    if lead is None:
-        return init_dt.strftime("%m-%d %HZ")
-    return f"{init_dt:%m-%d %HZ}\n{lead:.0f} h pre-LF"
+    """Compact initialization label used by the cycle plots."""
+    return init_dt.strftime("%m-%d %HZ")
+
+
+# The animation scale uses native inch thresholds, not converted metric ones.
+# Keep the project's own QPF palette; this is intentionally not the WPC scale.
+_ANIMATION_QPF_LEVELS_IN = np.asarray(
+    [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0,
+     10.0, 12.0, 16.0, 18.0, 20.0],
+    dtype=float,
+)
 
 
 def cycle_window_label(cycle):
@@ -703,8 +709,7 @@ def _map_context(ax, ccase):
 
 
 _BASE_ERROR_LEVELS_IN = np.asarray(
-    [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0,
-     3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
+    [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0],
     dtype=float,
 )
 
@@ -712,10 +717,10 @@ _BASE_ERROR_LEVELS_IN = np.asarray(
 def precipitation_error_levels(error_fields):
     """Symmetric nonlinear inch bounds for forecast-minus-observation maps.
 
-    Small errors receive fine color steps. Above two inches, each successive
+    The base scale is whole-inch throughout. Above two inches, each successive
     bin widens so unusually large tropical-cyclone rainfall errors remain on
-    the scale without sacrificing detail near zero. The base scale reaches
-    24 inches and grows geometrically when a field exceeds that range.
+    the scale. It reaches 24 inches and grows with whole-inch steps when a
+    field exceeds that range.
     """
     positive = list(_BASE_ERROR_LEVELS_IN)
     finite = [np.abs(np.asarray(field, dtype=float)[np.isfinite(field)])
@@ -734,7 +739,7 @@ def _precipitation_error_scale(error_fields):
     levels = precipitation_error_levels(error_fields)
     cmap = plt.get_cmap("RdBu_r", len(levels) - 1)
     norm = colors.BoundaryNorm(levels, cmap.N)
-    preferred = np.asarray([0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
+    preferred = np.asarray([0.0, 1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
     positive = levels[levels >= 0]
     ticks = [value for value in preferred
              if np.any(np.isclose(positive, value))]
@@ -802,7 +807,7 @@ def animate_cycle_qpf(ccase, fields, out_path):
     """Animate parent-domain forecast QPF across initializations."""
     qpf_cmap_obj, _ = qpf_cmap()
     qpf_norm = colors.BoundaryNorm(
-        np.asarray(QPF_LEVELS, dtype=float) / 25.4, qpf_cmap_obj.N)
+        _ANIMATION_QPF_LEVELS_IN, qpf_cmap_obj.N)
     forecasts = [cycle["parent_win"] / 25.4
                  for cycle in fields["cycles"]]
     _animate_cycle_field(
@@ -827,7 +832,7 @@ def animate_cycle_observed(ccase, fields, out_path):
     """Animate cycle-matched MRMS QPE (static while its window is unchanged)."""
     qpf_cmap_obj, _ = qpf_cmap()
     qpf_norm = colors.BoundaryNorm(
-        np.asarray(QPF_LEVELS, dtype=float) / 25.4, qpf_cmap_obj.N)
+        _ANIMATION_QPF_LEVELS_IN, qpf_cmap_obj.N)
     observations = [
         _cycle_observation(cycle, fields, "MRMS") / 25.4
         for cycle in fields["cycles"]
