@@ -17,7 +17,8 @@ Usage (on Hercules):
 import sys
 import csv
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta
+from time import perf_counter
 
 # Make sibling analysis modules importable no matter the cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,7 +43,10 @@ from hafs_case import (
     cycles_from_yaml, cycle_storm_case, discover_inits, window_hours,
     cycle_eligibility,
 )
-from ets_score import contingency_scores, build_mrms_total_window
+from ets_score import (contingency_scores, build_mrms_total_window,
+                       build_mrms_totals_windows)
+from parallel import ordered_map, report_runtime, report_workers, report_phase
+from field_cache import parent_cache_path, load_field, save_field
 from ets_full import regrid_2d_to_fixed, _OBS_COLOR, _FCST_STYLE
 from parent_qpf import (
     parent_path_at_fhour, pick_cumulative_record, stage4_total_window,
@@ -163,13 +167,45 @@ def parent_window_total(case, f1, f2, grid_lat, grid_lon):
 # Field building (once per cycles case)
 # =============================================================================
 
-def build_cycle_fields(ccase):
+def _build_parent_window(job):
+    """Process worker: return only the fixed-grid field, never native caches."""
+    case, f1, f2, grid_lat, grid_lon, cache_dir, refresh = job
+    import os
+    print(f"  Parent {case.init_str}: started pid={os.getpid()} "
+          f"f{f1:03d}-f{f2:03d}", flush=True)
+    cache_path = None
+    if cache_dir is not None:
+        paths = [parent_path_at_fhour(case, fh)
+                 for fh in ([f1, f2] if f1 > 0 else [f2])]
+        if all(path is not None for path in paths):
+            cache_path = parent_cache_path(cache_dir, paths, f1, f2,
+                                           grid_lat, grid_lon)
+            if not refresh:
+                cached = load_field(cache_path, grid_lat.shape)
+                if cached is not None:
+                    print(f"  {case.init_str}: cached parent window", flush=True)
+                    return cached, None
+    try:
+        field = parent_window_total(case, f1, f2, grid_lat, grid_lon)
+    except RuntimeError as exc:
+        return None, str(exc)
+    finally:
+        # The window's two endpoints won't be reused during this cycle run.
+        # Releasing them also keeps serial execution's memory bounded.
+        case.__dict__.pop("_parent_cumulative_cache", None)
+    if cache_path is not None:
+        save_field(cache_path, field)
+    return field, None
+
+
+def build_cycle_fields(ccase, refresh_cache=False):
     """Build everything the cycles product scores and plots.
 
     Each cycle contains its effective valid_start, the common valid_end, and
     matching parent, MRMS, and optional Stage IV accumulations. Raises when no
     cycle is eligible or every eligible cycle fails field extraction.
     """
+    report_phase("cycle discovery (sequential)")
     init_strs = ccase.inits or discover_inits(ccase.run_root)
     if not init_strs:
         raise RuntimeError(
@@ -212,29 +248,39 @@ def build_cycle_fields(ccase):
     # Per-cycle forecast windows.
     cycles = []
     survivors = []
+    jobs = []
+    parent_started = perf_counter()
     for case in cases:
         effective_start = max(ccase.valid_start, case.init_dt)
         f1, f2 = window_hours(case.init_dt, effective_start,
                               ccase.valid_end)
         print(f"\nCycle {case.init_str} (valid {effective_start:%Y-%m-%d %HZ}"
               f" -> {ccase.valid_end:%Y-%m-%d %HZ}; f{f1:03d}-f{f2:03d})")
-        try:
-            parent_win = parent_window_total(case, f1, f2,
-                                             grid_lat, grid_lon)
-        except RuntimeError as e:
-            print(f"  skip {case.init_str}: {e}")
+        jobs.append((case, f1, f2, grid_lat, grid_lon,
+                     ccase.out_dir / ".field_cache" if ccase.cache_fields else None,
+                     refresh_cache))
+    report_phase("parent extraction (process pool when effective workers > 1)")
+    report_workers(ccase.workers, len(jobs))
+    for case, job, (parent_win, error) in zip(
+            cases, jobs, ordered_map(_build_parent_window, jobs, ccase.workers)):
+        if error is not None:
+            print(f"  skip {case.init_str}: {error}")
             continue
+        f1, f2 = job[1:3]
+        effective_start = max(ccase.valid_start, case.init_dt)
         cycles.append(dict(init_str=case.init_str, init_dt=case.init_dt,
                            valid_start=effective_start,
                            valid_end=ccase.valid_end,
                            f1=f1, f2=f2, parent_win=parent_win,
                            track_fixes=case.track_fixes, _case=case))
         survivors.append(case)
+        print(f"  Parent {case.init_str}: collected result", flush=True)
     if not cycles:
         raise RuntimeError("Every eligible cycle failed field extraction.")
+    print(f"Timing: parent extraction {perf_counter() - parent_started:.1f}s")
 
     # Shared footprint: union of every surviving cycle's in-window track.
-    print("Union verification swath ...")
+    report_phase("union verification swath (sequential)")
     all_pts = []
     for case, cycle in zip(survivors, cycles):
         all_pts.extend(window_track_points(case, cycle["valid_start"],
@@ -243,24 +289,38 @@ def build_cycle_fields(ccase):
     print(f"  swath: {int(swath.sum()):,} grid points from "
           f"{len(survivors)} track(s)")
 
-    # Matching observations for each init-clipped forecast window.
+    # Matching observations: share totals for identical windows and decode
+    # overlapping MRMS hours once across all init-clipped windows.
+    starts = sorted({cycle["valid_start"] for cycle in cycles})
+    mrms_started = perf_counter()
+    report_phase("MRMS observations (sequential; parent workers have exited)")
+    if len(starts) == 1:
+        mrms_totals = {starts[0]: build_mrms_total_window(
+            starts[0], ccase.valid_end, ccase.mrms_cache_dir, grid_lat, grid_lon)}
+    else:
+        mrms_totals = build_mrms_totals_windows(
+            starts, ccase.valid_end, ccase.mrms_cache_dir, grid_lat, grid_lon)
+    print(f"Timing: MRMS {perf_counter() - mrms_started:.1f}s")
+    stage4_started = perf_counter()
+    report_phase("Stage IV observations (sequential)")
+    stage4_totals = {}
     for case, cycle in zip(survivors, cycles):
         start, end = cycle["valid_start"], cycle["valid_end"]
         print(f"MRMS total for {case.init_str}: {start:%m-%d %HZ} -> "
               f"{end:%m-%d %HZ} ...")
-        cycle["mrms_win"] = build_mrms_total_window(
-            start, end, ccase.mrms_cache_dir, grid_lat, grid_lon)
+        cycle["mrms_win"] = mrms_totals[start]
         points = window_track_points(case, start, end)
         print(f"Stage IV total for {case.init_str} ...")
         s4_lat, s4_lon, s4_native, s4_label = stage4_total_window(
             ccase.stage4_cache_dir, start, end, points,
-            ccase.display_radius_km)
+            ccase.display_radius_km, stage4_totals)
         if s4_native is None:
             cycle["stage4_win"], cycle["s4_label"] = None, "unavailable"
         else:
             cycle["stage4_win"] = regrid_2d_to_fixed(
                 s4_lat, s4_lon, s4_native, grid_lat, grid_lon)
             cycle["s4_label"] = s4_label
+    print(f"Timing: Stage IV {perf_counter() - stage4_started:.1f}s")
 
     if all(cycle["stage4_win"] is None for cycle in cycles):
         print("  Stage IV unavailable — scoring MRMS only.")
@@ -856,9 +916,105 @@ def animate_cycle_observed(ccase, fields, out_path):
         colorbar_spacing="uniform")
 
 
-def compute_cycles(ccase, fields=None):
+def _read_cycle_csv(path):
+    """Read numeric table values while preserving identifiers and timestamps."""
+    text_columns = {"init", "init_dt", "valid_start", "valid_end", "valid",
+                    "forecast", "observation", "source"}
+    with open(path, newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    for row in rows:
+        for key, value in row.items():
+            if key not in text_columns:
+                row[key] = float(value) if value else np.nan
+        row["_init_dt"] = datetime.strptime(row["init"], "%Y%m%d%H")
+    return rows
+
+
+def replot_cycles_from_csv(ccase):
+    """Redraw saved metric/FSS/summary/track tables without source data access.
+
+    Distributions and GIFs require grid values, which are not stored in CSVs.
+    Replot never recomputes scores or appends ML feature rows.
+    """
+    slug = ccase.output_slug
+    table_path = ccase.out_dir / f"cycles_{slug}.csv"
+    if not table_path.exists():
+        raise FileNotFoundError(f"Missing {table_path}; run the cycles command first.")
+    table = _read_cycle_csv(table_path)
+    if not table:
+        raise ValueError(f"No cycle scores in {table_path}")
+    grouped = {}
+    score_keys = ("threshold", "a", "b", "c", "d", "ets", "bias",
+                  "pod", "far", "csi", "hss")
+    for row in table:
+        key = (row["init"], row["forecast"], row["observation"])
+        if key not in grouped:
+            grouped[key] = dict(
+                init_str=row["init"], init_dt=row["_init_dt"],
+                forecast=row["forecast"], observation=row["observation"],
+                cont={"n": row["n"], "rmse": row["rmse"], "mae": row["mae"],
+                      "bias": row["bias_mm"], "r": row["r"]}, rows=[])
+        grouped[key]["rows"].append({key: row[key] for key in score_keys})
+    results = list(grouped.values())
+    stage4_present = any(row["observation"] == "Stage IV" for row in table)
+    caveat = cycles_caveat({"cycles": [
+        {"stage4_win": True if stage4_present else None}]}, ccase)
+    plots = [
+        ("metrics", lambda path: plot_metrics(ccase, results, path, caveat)),
+        ("ets_heatmap", lambda path: plot_ets_leadtime(ccase, results, path)),
+        ("ets_bars", lambda path: plot_ets_threshold_bars(ccase, results, path)),
+    ]
+    fss_path = ccase.out_dir / f"cycles_fss_{slug}.csv"
+    fss_rows = _read_cycle_csv(fss_path) if fss_path.exists() else []
+    for row in fss_rows:
+        row["init_dt"] = row["_init_dt"]
+    if fss_rows:
+        plots.append(("fss_heatmap", lambda path: plot_fss_leadtime(
+            ccase, fss_rows, path)))
+    else:
+        print(f"Skipped FSS: no rows in {fss_path}")
+    summary_path = ccase.out_dir / f"cycles_summary_{slug}.csv"
+    summary = _read_cycle_csv(summary_path) if summary_path.exists() else []
+    if summary:
+        plots.extend([
+            ("percentiles", lambda path: plot_percentiles_by_cycle(ccase, summary, path)),
+            ("pattern_r", lambda path: plot_pattern_r(ccase, summary, path)),
+        ])
+        if any(np.isfinite(row.get("mean_track_err_km", np.nan)) for row in summary):
+            plots.extend([
+                ("shifted_ets", lambda path: plot_shifted_skill(summary, ccase, path)),
+                ("track_precip", lambda path: plot_track_precip(summary, ccase, path)),
+            ])
+    else:
+        print(f"Skipped summary plots: no rows in {summary_path}")
+    track_path = ccase.out_dir / f"cycles_track_{slug}.csv"
+    track_by_init = {}
+    if track_path.exists():
+        for row in _read_cycle_csv(track_path):
+            row["valid"] = datetime.strptime(row["valid"], "%Y%m%d%H")
+            track_by_init.setdefault(row["_init_dt"], []).append(row)
+    if track_by_init:
+        plots.append(("track_error", lambda path: plot_track_error(
+            track_by_init, ccase, path)))
+    for name, plotter in plots:
+        path = ccase.out_dir / f"cycles_{name}_{slug}.png"
+        if plotter(path) is False:
+            print(f"Skipped plot: {path.name} (no finite data)")
+        else:
+            print(f"Replotted: {path}")
+    print("CSV replot complete. Distribution curves and animations require "
+          "gridded fields; rerun cycles to regenerate those products.")
+
+
+def compute_cycles(ccase, fields=None, refresh_cache=False):
+    report_runtime(ccase.workers)
+    started = perf_counter()
     if fields is None:
-        fields = build_cycle_fields(ccase)
+        fields = (build_cycle_fields(ccase, refresh_cache=True)
+                  if refresh_cache else build_cycle_fields(ccase))
+    print(f"Timing: fields {perf_counter() - started:.1f}s")
+    scoring_started = perf_counter()
+    report_phase("scoring/tables (sequential)")
     swath = fields["swath"]
     # Make sure the headline ETS threshold is actually scored.
     thresholds = list(ccase.thresholds_mm)
@@ -1125,6 +1281,9 @@ def compute_cycles(ccase, fields=None):
                              for key in SUMMARY_FIELDS})
     print(f"Saved table: {out_summary_csv}")
 
+    print(f"Timing: scoring/tables {perf_counter() - scoring_started:.1f}s")
+    plotting_started = perf_counter()
+    report_phase("plots/animations (sequential)")
     caveat = cycles_caveat(fields, ccase)
     print(caveat)
     out_metrics = ccase.out_dir / f"cycles_metrics_{slug}.png"
@@ -1191,7 +1350,10 @@ def compute_cycles(ccase, fields=None):
             else:
                 print(f"Saved movie: {out_animation}")
 
+    print(f"Timing: plots/animations {perf_counter() - plotting_started:.1f}s")
     if ccase.ml_features:
+        report_phase("ML features (sequential)")
+        features_started = perf_counter()
         try:
             from ml_features import append_features, extract_cycle_features
             feature_rows = []
@@ -1209,7 +1371,8 @@ def compute_cycles(ccase, fields=None):
                   f"{ccase.ml_features_csv}")
         except Exception as exc:
             print(f"features: extraction failed: {exc}")
-
+        print(f"Timing: ML features {perf_counter() - features_started:.1f}s")
+    print(f"Timing: total {perf_counter() - started:.1f}s")
 
 if __name__ == "__main__":
     compute_cycles(cycles_from_yaml(sys.argv[1]))

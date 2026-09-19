@@ -99,6 +99,56 @@ def build_mrms_total(case, max_fhour, grid_lat, grid_lon):
         case.mrms_cache_dir, grid_lat, grid_lon)
 
 
+def build_mrms_totals_windows(starts, valid_end, mrms_cache_dir,
+                             grid_lat, grid_lon):
+    """Build nested windows ending together, decoding each native hour once.
+
+    Walk backwards and snapshot only the small regridded totals at requested
+    starts. This retains sum-before-interpolation and missing-hour/NaN behavior
+    without keeping a CONUS grid per hour or per cycle in memory.
+    """
+    starts = sorted(set(starts), reverse=True)
+    if not starts:
+        return {}
+    if any(start >= valid_end or
+           (valid_end - start).total_seconds() % 3600 for start in starts):
+        raise ValueError("MRMS windows must contain a positive whole number of hours")
+    mrms_cache_dir = Path(mrms_cache_dir)
+    mrms_cache_dir.mkdir(parents=True, exist_ok=True)
+    s3 = boto3.client("s3", region_name="us-east-1",
+                      config=Config(signature_version=UNSIGNED))
+    total = lat_axis = lon_axis = None
+    totals = {}
+    t = valid_end
+    loaded = attempted = 0
+    for start in starts:
+        while t > start:
+            attempted += 1
+            try:
+                lat, lon, data = load_mrms_hour(s3, t, mrms_cache_dir)
+            except Exception as exc:
+                print(f"  MRMS {t:%Y-%m-%d %HZ} unavailable: {exc}")
+            else:
+                if total is None:
+                    lat_axis, lon_axis = lat, lon
+                    total = np.zeros_like(data, dtype=np.float64)
+                elif (data.shape != total.shape
+                      or not np.array_equal(lat, lat_axis)
+                      or not np.array_equal(lon, lon_axis)):
+                    raise RuntimeError(f"MRMS grid changed at {t:%Y-%m-%d %HZ}")
+                total += data
+                loaded += 1
+            t -= timedelta(hours=1)
+            if attempted % 12 == 0:
+                print(f"  MRMS: {attempted} unique hours read ({loaded} available)")
+        if total is None:
+            raise RuntimeError(f"No MRMS hours could be loaded for {start} -> {valid_end}.")
+        totals[start] = regrid_mrms_to_fixed(
+            lat_axis, lon_axis, total, grid_lat, grid_lon)
+    print(f"  MRMS: {attempted} unique hours for {len(starts)} window(s)")
+    return totals
+
+
 def tc_swath_mask(case, max_fhour, grid_lat, grid_lon):
     """Boolean mask: grid points within case.mask_radius_km of the track at any hour."""
     swath = np.zeros(grid_lat.shape, dtype=bool)

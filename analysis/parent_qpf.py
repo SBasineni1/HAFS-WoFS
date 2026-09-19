@@ -246,14 +246,23 @@ def stage4_total(case, end_fhour):
 
 
 def stage4_total_window(cache_dir, valid_start, valid_end, track_points,
-                        radius_km):
+                        radius_km, totals_cache=None):
     """Stage IV touched-days total for an absolute window, masked to the
     union of circles of radius_km around track_points [(lat, lon), ...].
 
     Returns (lat2d, lon2d, total_mm, label) or (None, None, None, None).
     """
-    lat2d, lon2d, total, used = stage4_sum_days(cache_dir, valid_start,
-                                                valid_end)
+    # Only the unmasked daily total can be shared: each cycle has its own
+    # display footprint. Keep one native total to bound memory usage.
+    key = (str(cache_dir), valid_start.date(), valid_end.date())
+    if totals_cache is not None and key in totals_cache:
+        lat2d, lon2d, total, used = totals_cache[key]
+    else:
+        result = stage4_sum_days(cache_dir, valid_start, valid_end)
+        lat2d, lon2d, total, used = result
+        if totals_cache is not None:
+            totals_cache.clear()
+            totals_cache[key] = result
     if total is None:
         return None, None, None, None
     swath = np.zeros(lat2d.shape, dtype=bool)

@@ -413,6 +413,8 @@ class CyclesCase:
     fss_thresholds_in: list = field(default_factory=lambda: [1.0, 2.0])
     fss_scales_cells: list = field(default_factory=lambda: [1, 3, 5, 11, 21, 41])
     make_animation: bool = True
+    workers: int = 1
+    cache_fields: bool = True
     best_track: Path = None
     track_step_hours: int = 6
     headline_fss_threshold_in: float = None
@@ -426,6 +428,8 @@ class CyclesCase:
         Path(__file__).resolve().parent / "output" / "ml_features.csv"))
 
     def __post_init__(self):
+        from parallel import positive_workers
+        self.workers = positive_workers(self.workers)
         if self.object_threshold_mm is None:
             self.object_threshold_mm = self.ets_threshold_mm
 
@@ -540,6 +544,8 @@ def cycles_from_yaml(yaml_path):
         fss_scales_cells=[int(v) for v in cfg.get(
             "fss_scales_cells", [1, 3, 5, 11, 21, 41])],
         make_animation=bool(cfg.get("make_animation", True)),
+        workers=cfg.get("workers", 1),
+        cache_fields=bool(cfg.get("cache_fields", True)),
         best_track=Path(cfg["best_track"]) if cfg.get("best_track") else None,
         track_step_hours=int(cfg.get("track_step_hours", 6)),
         headline_fss_threshold_in=(
