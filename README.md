@@ -225,7 +225,14 @@ Several optimizations apply even with one worker:
   are accumulated backwards using float64; tiny floating-point differences
   from independent forward sums are possible.
 - Stage IV reuses the unmasked native total when the touched dates match,
-  while keeping each cycle's distinct track mask.
+  while keeping each cycle's distinct track mask. Its interpolation mesh is
+  also reused across cycles with identical finite source coordinates, avoiding
+  repeated triangulation of the CONUS grid. Each masked field is still
+  interpolated separately with the same linear method and NaN outside the
+  source hull. A changed source grid or finite-data support rebuilds the mesh.
+  This is an in-memory optimization for each run, including with one worker;
+  no new flags are needed. Per-cycle timings separate accumulation/masking
+  from interpolation and report whether the mesh was built or reused.
 - Derived parent-window grids are saved under `out_dir/.field_cache` and
   reused on subsequent `cycles` runs. The key includes source paths, file
   sizes and modification times, forecast window, and grid coordinates.

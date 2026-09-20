@@ -15,13 +15,15 @@ Usage (on Hercules):
 
 import sys
 import csv
+import hashlib
 from pathlib import Path
 
 # Make sibling analysis modules importable no matter the cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.interpolate import griddata, LinearNDInterpolator
+from scipy.spatial import Delaunay
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -38,12 +40,19 @@ from hafs_case import from_yaml
 from plot_units import inches, miles
 
 
-def regrid_2d_to_fixed(src_lat, src_lon, data, grid_lat, grid_lon):
+def regrid_2d_to_fixed(src_lat, src_lon, data, grid_lat, grid_lon, *,
+                     geometry_cache=None):
     """Interpolate a curvilinear/rectilinear source field onto the fixed mesh.
 
     src_lat/src_lon may be 1-D axes or 2-D meshes; data is shaped like the
     2-D source mesh. Uses linear griddata; points outside the source hull
     come back NaN (no extrapolation).
+
+    An optional caller-owned dict retains one Delaunay triangulation across
+    fields. Hash the finite source coordinates, not just the array shape:
+    changing coordinates or missing-data support requires a new mesh. Values
+    (including each cycle's zeroed track footprint) are always interpolated
+    afresh. The target grid may change without rebuilding the source mesh.
     """
     src_lat = np.asarray(src_lat, dtype=float)
     src_lon = np.asarray(src_lon, dtype=float)
@@ -52,6 +61,16 @@ def regrid_2d_to_fixed(src_lat, src_lon, data, grid_lat, grid_lon):
     pts = np.column_stack([src_lat.ravel(), src_lon.ravel()])
     vals = np.asarray(data, dtype=float).ravel()
     finite = np.isfinite(vals)
+    if geometry_cache is not None:
+        points = np.ascontiguousarray(pts[finite])
+        key = hashlib.sha256(points).digest()
+        if geometry_cache.get("key") != key:
+            # Release the old mesh before building another large one.
+            geometry_cache.clear()
+            mesh = Delaunay(points)
+            geometry_cache.update(key=key, mesh=mesh)
+        return LinearNDInterpolator(geometry_cache["mesh"], vals[finite])(
+            grid_lat, grid_lon)
     out = griddata(
         pts[finite], vals[finite],
         (grid_lat, grid_lon), method="linear",

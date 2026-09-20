@@ -304,22 +304,38 @@ def build_cycle_fields(ccase, refresh_cache=False):
     stage4_started = perf_counter()
     report_phase("Stage IV observations (sequential)")
     stage4_totals = {}
+    stage4_geometry = {}
     for case, cycle in zip(survivors, cycles):
         start, end = cycle["valid_start"], cycle["valid_end"]
-        print(f"MRMS total for {case.init_str}: {start:%m-%d %HZ} -> "
+        print(f"Using shared MRMS total for {case.init_str}: {start:%m-%d %HZ} -> "
               f"{end:%m-%d %HZ} ...")
         cycle["mrms_win"] = mrms_totals[start]
         points = window_track_points(case, start, end)
         print(f"Stage IV total for {case.init_str} ...")
+        total_started = perf_counter()
         s4_lat, s4_lon, s4_native, s4_label = stage4_total_window(
             ccase.stage4_cache_dir, start, end, points,
             ccase.display_radius_km, stage4_totals)
+        print(f"  Stage IV {case.init_str}: accumulation/mask "
+              f"{perf_counter() - total_started:.1f}s", flush=True)
         if s4_native is None:
             cycle["stage4_win"], cycle["s4_label"] = None, "unavailable"
         else:
+            regrid_started = perf_counter()
+            previous_key = stage4_geometry.get("key")
+            print(f"  Stage IV {case.init_str}: interpolating ...", flush=True)
             cycle["stage4_win"] = regrid_2d_to_fixed(
-                s4_lat, s4_lon, s4_native, grid_lat, grid_lon)
+                s4_lat, s4_lon, s4_native, grid_lat, grid_lon,
+                geometry_cache=stage4_geometry)
+            geometry_status = ("reused" if previous_key == stage4_geometry["key"]
+                               else "built")
+            print(f"  Stage IV {case.init_str}: interpolation "
+                  f"{perf_counter() - regrid_started:.1f}s "
+                  f"(mesh {geometry_status})", flush=True)
             cycle["s4_label"] = s4_label
+    # Do not retain native totals or the mesh during scoring and plotting.
+    stage4_totals.clear()
+    stage4_geometry.clear()
     print(f"Timing: Stage IV {perf_counter() - stage4_started:.1f}s")
 
     if all(cycle["stage4_win"] is None for cycle in cycles):

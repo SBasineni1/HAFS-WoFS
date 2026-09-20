@@ -202,6 +202,39 @@ def test_identical_mrms_windows_are_built_once(tmp_path, monkeypatch):
     assert fields["cycles"][0]["mrms_win"] is fields["cycles"][1]["mrms_win"]
 
 
+def test_stage4_cycles_reuse_mesh_with_separate_track_masks(tmp_path, monkeypatch, capsys):
+    from dataclasses import replace
+    import ets_full
+    ccase = _tiny_cycles_case(tmp_path, tmp_path)
+    ccase.inits = ["2024092400", "2024092500"]
+    ccase.display_radius_km = 40
+    cases = {init: replace(_stub_case(tmp_path), init_str=init,
+                          init_dt=datetime.strptime(init, "%Y%m%d%H"))
+             for init in ccase.inits}
+    monkeypatch.setattr(cycles, "cycle_storm_case", lambda c, init: cases[init])
+    monkeypatch.setattr(cycles, "discover_files", lambda *a: [(96, Path("fake"))])
+    monkeypatch.setattr(cycles, "parent_window_total", lambda *a: np.ones((3, 3)))
+    monkeypatch.setattr(cycles, "build_mrms_total_window", lambda *a: np.ones((3, 3)))
+    tracks = {ccase.inits[0]: [(0., 0.)], ccase.inits[1]: [(1., 1.)]}
+    monkeypatch.setattr(cycles, "window_track_points", lambda c, *a: tracks[c.init_str])
+    glat, glon = ccase.fixed_grid()
+    total = np.full(glat.shape, 20.)
+    with patch.object(parent_qpf, "stage4_sum_days",
+                      return_value=(glat, glon, total, ["20240927"])) as summed, \
+         patch.object(ets_full, "Delaunay", wraps=ets_full.Delaunay) as build:
+        fields = cycles.build_cycle_fields(ccase)
+    assert summed.call_count == 1
+    assert build.call_count == 1
+    for cycle in fields["cycles"]:
+        lat, lon = tracks[cycle["init_str"]][0]
+        expected = np.where(cycles.haversine_km(lat, lon, glat, glon) <= 40, total, 0)
+        np.testing.assert_allclose(cycle["stage4_win"], expected, atol=1e-12)
+    assert not np.array_equal(fields["cycles"][0]["stage4_win"],
+                              fields["cycles"][1]["stage4_win"])
+    output = capsys.readouterr().out
+    assert "mesh built" in output and "mesh reused" in output
+
+
 def test_cycles_replot_uses_only_saved_tables(tmp_path, monkeypatch):
     ccase = _tiny_cycles_case(tmp_path / "unmounted", tmp_path)
     cycles.compute_cycles(ccase, fields=_tiny_cycle_fields())
