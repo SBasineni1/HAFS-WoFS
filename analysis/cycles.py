@@ -45,7 +45,10 @@ from hafs_case import (
 )
 from ets_score import (contingency_scores, build_mrms_total_window,
                        build_mrms_totals_windows)
-from parallel import ordered_map, report_runtime, report_workers, report_phase
+from parallel import (
+    ordered_map, report_runtime, report_workers, report_phase, worker_count,
+    run_stage_job as _run_stage_job,
+)
 from field_cache import parent_cache_path, load_field, save_field
 from ets_full import regrid_2d_to_fixed, _OBS_COLOR, _FCST_STYLE
 from parent_qpf import (
@@ -198,6 +201,47 @@ def _build_parent_window(job):
     return field, None
 
 
+def _build_mrms_observations(ccase, starts, grid_lat, grid_lon):
+    if len(starts) == 1:
+        return {starts[0]: build_mrms_total_window(
+            starts[0], ccase.valid_end, ccase.mrms_cache_dir, grid_lat, grid_lon)}
+    return build_mrms_totals_windows(
+        starts, ccase.valid_end, ccase.mrms_cache_dir, grid_lat, grid_lon)
+
+
+def _build_stage4_observations(ccase, windows, grid_lat, grid_lon):
+    """One writer owns Stage IV downloads, native totals and the reusable mesh."""
+    stage4_totals = {}
+    stage4_geometry = {}
+    output = {}
+    for init_str, start, end, points in windows:
+        cycle = {}
+        print(f"Stage IV total for {init_str} ...")
+        total_started = perf_counter()
+        s4_lat, s4_lon, s4_native, s4_label = stage4_total_window(
+            ccase.stage4_cache_dir, start, end, points,
+            ccase.display_radius_km, stage4_totals)
+        print(f"  Stage IV {init_str}: accumulation/mask "
+              f"{perf_counter() - total_started:.1f}s", flush=True)
+        if s4_native is None:
+            cycle["stage4_win"], cycle["s4_label"] = None, "unavailable"
+        else:
+            regrid_started = perf_counter()
+            previous_key = stage4_geometry.get("key")
+            print(f"  Stage IV {init_str}: interpolating ...", flush=True)
+            cycle["stage4_win"] = regrid_2d_to_fixed(
+                s4_lat, s4_lon, s4_native, grid_lat, grid_lon,
+                geometry_cache=stage4_geometry)
+            geometry_status = ("reused" if previous_key == stage4_geometry["key"]
+                               else "built")
+            print(f"  Stage IV {init_str}: interpolation "
+                  f"{perf_counter() - regrid_started:.1f}s "
+                  f"(mesh {geometry_status})", flush=True)
+            cycle["s4_label"] = s4_label
+        output[init_str] = (cycle["stage4_win"], cycle["s4_label"])
+    return output
+
+
 def build_cycle_fields(ccase, refresh_cache=False):
     """Build everything the cycles product scores and plots.
 
@@ -289,54 +333,25 @@ def build_cycle_fields(ccase, refresh_cache=False):
     print(f"  swath: {int(swath.sum()):,} grid points from "
           f"{len(survivors)} track(s)")
 
-    # Matching observations: share totals for identical windows and decode
-    # overlapping MRMS hours once across all init-clipped windows.
+    # Each observation source has one owner, avoiding duplicate downloads and
+    # retaining shared MRMS hours / Stage IV totals and mesh reuse within it.
     starts = sorted({cycle["valid_start"] for cycle in cycles})
-    mrms_started = perf_counter()
-    report_phase("MRMS observations (sequential; parent workers have exited)")
-    if len(starts) == 1:
-        mrms_totals = {starts[0]: build_mrms_total_window(
-            starts[0], ccase.valid_end, ccase.mrms_cache_dir, grid_lat, grid_lon)}
-    else:
-        mrms_totals = build_mrms_totals_windows(
-            starts, ccase.valid_end, ccase.mrms_cache_dir, grid_lat, grid_lon)
-    print(f"Timing: MRMS {perf_counter() - mrms_started:.1f}s")
-    stage4_started = perf_counter()
-    report_phase("Stage IV observations (sequential)")
-    stage4_totals = {}
-    stage4_geometry = {}
-    for case, cycle in zip(survivors, cycles):
-        start, end = cycle["valid_start"], cycle["valid_end"]
-        print(f"Using shared MRMS total for {case.init_str}: {start:%m-%d %HZ} -> "
-              f"{end:%m-%d %HZ} ...")
-        cycle["mrms_win"] = mrms_totals[start]
-        points = window_track_points(case, start, end)
-        print(f"Stage IV total for {case.init_str} ...")
-        total_started = perf_counter()
-        s4_lat, s4_lon, s4_native, s4_label = stage4_total_window(
-            ccase.stage4_cache_dir, start, end, points,
-            ccase.display_radius_km, stage4_totals)
-        print(f"  Stage IV {case.init_str}: accumulation/mask "
-              f"{perf_counter() - total_started:.1f}s", flush=True)
-        if s4_native is None:
-            cycle["stage4_win"], cycle["s4_label"] = None, "unavailable"
-        else:
-            regrid_started = perf_counter()
-            previous_key = stage4_geometry.get("key")
-            print(f"  Stage IV {case.init_str}: interpolating ...", flush=True)
-            cycle["stage4_win"] = regrid_2d_to_fixed(
-                s4_lat, s4_lon, s4_native, grid_lat, grid_lon,
-                geometry_cache=stage4_geometry)
-            geometry_status = ("reused" if previous_key == stage4_geometry["key"]
-                               else "built")
-            print(f"  Stage IV {case.init_str}: interpolation "
-                  f"{perf_counter() - regrid_started:.1f}s "
-                  f"(mesh {geometry_status})", flush=True)
-            cycle["s4_label"] = s4_label
-    # Do not retain native totals or the mesh during scoring and plotting.
-    stage4_totals.clear()
-    stage4_geometry.clear()
-    print(f"Timing: Stage IV {perf_counter() - stage4_started:.1f}s")
+    windows = [(case.init_str, cycle["valid_start"], cycle["valid_end"],
+                window_track_points(case, cycle["valid_start"], cycle["valid_end"]))
+               for case, cycle in zip(survivors, cycles)]
+    observation_jobs = [
+        ("MRMS", _build_mrms_observations, (ccase, starts, grid_lat, grid_lon)),
+        ("Stage IV", _build_stage4_observations, (ccase, windows, grid_lat, grid_lon)),
+    ]
+    report_phase("observations (MRMS and Stage IV are independent jobs)")
+    report_workers(ccase.workers, len(observation_jobs), "Observations")
+    observation_started = perf_counter()
+    mrms_totals, stage4_fields = list(ordered_map(
+        _run_stage_job, observation_jobs, ccase.workers))
+    for cycle in cycles:
+        cycle["mrms_win"] = mrms_totals[cycle["valid_start"]]
+        cycle["stage4_win"], cycle["s4_label"] = stage4_fields[cycle["init_str"]]
+    print(f"Timing: observations wall time {perf_counter() - observation_started:.1f}s")
 
     if all(cycle["stage4_win"] is None for cycle in cycles):
         print("  Stage IV unavailable — scoring MRMS only.")
@@ -1022,15 +1037,9 @@ def replot_cycles_from_csv(ccase):
           "gridded fields; rerun cycles to regenerate those products.")
 
 
-def compute_cycles(ccase, fields=None, refresh_cache=False):
-    report_runtime(ccase.workers)
-    started = perf_counter()
-    if fields is None:
-        fields = (build_cycle_fields(ccase, refresh_cache=True)
-                  if refresh_cache else build_cycle_fields(ccase))
-    print(f"Timing: fields {perf_counter() - started:.1f}s")
-    scoring_started = perf_counter()
-    report_phase("scoring/tables (sequential)")
+def _score_cycle(job):
+    """Pure per-cycle calculation; only the parent writes shared CSV tables."""
+    ccase, fields, bdeck_full = job
     swath = fields["swath"]
     # Make sure the headline ETS threshold is actually scored.
     thresholds = list(ccase.thresholds_mm)
@@ -1042,7 +1051,6 @@ def compute_cycles(ccase, fields=None, refresh_cache=False):
     results = []
     fss_rows = []
     dist_rows = []
-    bdeck_full = parse_bdeck_full(ccase.best_track) if ccase.best_track else None
     fss_thresholds_in = list(ccase.fss_thresholds_in)
     if (ccase.headline_fss_threshold_in is not None
             and ccase.headline_fss_threshold_in not in fss_thresholds_in):
@@ -1117,57 +1125,6 @@ def compute_cycles(ccase, fields=None, refresh_cache=False):
                                      ccase.grid_res),
             })
 
-    ccase.out_dir.mkdir(parents=True, exist_ok=True)
-    slug = ccase.output_slug
-    out_csv = ccase.out_dir / f"cycles_{slug}.csv"
-
-    fieldnames = ["init", "valid_start", "valid_end",
-                  "lead_hours_to_landfall", "forecast",
-                  "observation", "threshold", "n",
-                  "rmse", "mae", "bias_mm", "r", "a", "b", "c", "d",
-                  "ets", "bias", "pod", "far", "csi", "hss"]
-    with open(out_csv, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=fieldnames)
-        w.writeheader()
-        for res in results:
-            cont = res["cont"]
-            for r in res["rows"]:
-                w.writerow({"init": res["init_str"],
-                            "valid_start": res["valid_start"].strftime(
-                                "%Y%m%d%H"),
-                            "valid_end": res["valid_end"].strftime(
-                                "%Y%m%d%H"),
-                            "lead_hours_to_landfall": hours_before_landfall(
-                                ccase, res["init_dt"]),
-                            "forecast": res["forecast"],
-                            "observation": res["observation"],
-                            "n": cont["n"], "rmse": cont["rmse"],
-                            "mae": cont["mae"], "bias_mm": cont["bias"],
-                            "r": cont["r"], **r})
-    print(f"\nSaved table: {out_csv}")
-
-    out_fss_csv = ccase.out_dir / f"cycles_fss_{slug}.csv"
-    with open(out_fss_csv, "w", newline="") as fh:
-        fieldnames = ["init", "lead_hours_to_landfall", "forecast",
-                      "observation", "threshold", "threshold_in", "scale_cells",
-                      "scale_km", "fss"]
-        writer = csv.DictWriter(fh, fieldnames=fieldnames,
-                                extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(fss_rows)
-    print(f"Saved table: {out_fss_csv}")
-
-    out_dist_csv = ccase.out_dir / f"cycles_dist_{slug}.csv"
-    dist_fields = ["init", "source", "p50", "p90", "p95", "p99",
-                   "max_mm", "volume_km3", "wet_frac"]
-    with open(out_dist_csv, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=dist_fields)
-        writer.writeheader()
-        for row in dist_rows:
-            writer.writerow({key: _csv_value(row.get(key))
-                             for key in dist_fields})
-    print(f"Saved table: {out_dist_csv}")
-
     track_rows_by_init = {}
     track_summaries_by_init = {}
     if bdeck_full is not None:
@@ -1185,28 +1142,6 @@ def compute_cycles(ccase, fields=None, refresh_cache=False):
             track_rows_by_init[cyc["init_dt"]] = rows
             track_summaries_by_init[cyc["init_dt"]] = cycle_track_summary(
                 rows, landfall)
-        out_track_csv = ccase.out_dir / f"cycles_track_{slug}.csv"
-        track_fields = [
-            "init", "lead_hours_to_landfall", "valid", "fhr",
-            "pos_err_km", "along_km", "cross_km", "dlat_deg", "dlon_deg",
-            "vmax_err_kt", "mslp_err_hpa",
-        ]
-        with open(out_track_csv, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=track_fields)
-            writer.writeheader()
-            for init_dt, rows in sorted(track_rows_by_init.items()):
-                for row in rows:
-                    output = {key: _csv_value(row.get(key))
-                              for key in track_fields}
-                    output["init"] = init_dt.strftime("%Y%m%d%H")
-                    output["lead_hours_to_landfall"] = _csv_value(
-                        hours_before_landfall(ccase, init_dt))
-                    output["valid"] = row["valid"].strftime("%Y%m%d%H")
-                    writer.writerow(output)
-        print(f"Saved table: {out_track_csv}")
-    else:
-        print("Best track unavailable — track CSV and plots not produced.")
-
     # The default headline FSS uses the first threshold and middle scale.
     headline_threshold_in = (
         ccase.headline_fss_threshold_in
@@ -1287,6 +1222,159 @@ def compute_cycles(ccase, fields=None, refresh_cache=False):
             print(f"  shifted ETS {ets:.3f} -> "
                   f"{shifted['ets_shifted']:.3f}")
         summary_rows.append(row)
+    return results, fss_rows, dist_rows, track_rows_by_init, summary_rows
+
+
+def _prepare_map_features(ccase):
+    """Populate map asset files once before multiple render processes use them."""
+    print("Preparing shared map assets before parallel GIF rendering ...", flush=True)
+    fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree()})
+    try:
+        _map_context(ax, ccase)
+        extent = ax.get_extent(ccrs.PlateCarree())
+        for feature in (cfeature.COASTLINE, cfeature.STATES, cfeature.BORDERS):
+            tuple(feature.intersecting_geometries(extent))
+    finally:
+        plt.close(fig)
+
+
+def _render_product(job):
+    path, function, args, optional = job
+    try:
+        # Each output starts with the same style, regardless of which worker
+        # picks it up or which plot ran on that worker previously.
+        with matplotlib.rc_context(rc=matplotlib.rcParamsDefault):
+            result = _run_stage_job((f"Render {path.name}", function, args))
+    except (ImportError, RuntimeError) as exc:
+        if not optional:
+            raise
+        return f"Animation unavailable ({path.name}): {exc}"
+    finally:
+        plt.close("all")
+    if result is False:
+        return f"Skipped plot: {path.name} (no finite data)"
+    return f"Saved {'movie' if optional else 'plot'}: {path}"
+
+
+def _extract_features(job):
+    from ml_features import extract_cycle_features
+    ccase, cyc, summary_row, bdeck_full = job
+    case = cyc.get("_case")
+    if case is None:
+        try:
+            case = cycle_storm_case(ccase, cyc["init_str"])
+        except Exception as exc:
+            print(f"  feature case {cyc['init_str']}: {exc}")
+    return _run_stage_job((f"Features {cyc['init_str']}", extract_cycle_features,
+                           (ccase, case, cyc, summary_row, bdeck_full)))
+
+
+def compute_cycles(ccase, fields=None, refresh_cache=False):
+    report_runtime(ccase.workers)
+    started = perf_counter()
+    if fields is None:
+        fields = (build_cycle_fields(ccase, refresh_cache=True)
+                  if refresh_cache else build_cycle_fields(ccase))
+    print(f"Timing: fields {perf_counter() - started:.1f}s")
+    scoring_started = perf_counter()
+    report_phase("scoring (per-cycle jobs; table writes in parent)")
+    bdeck_full = parse_bdeck_full(ccase.best_track) if ccase.best_track else None
+    score_jobs = []
+    for cycle in fields["cycles"]:
+        # Send only this cycle and its observation fields, not every cycle's
+        # arrays or native case caches, to each worker.
+        one = {key: value for key, value in cycle.items() if key != "_case"}
+        one["mrms_win"] = _cycle_observation(cycle, fields, "MRMS")
+        one["stage4_win"] = _cycle_observation(cycle, fields, "Stage IV")
+        context = {key: fields[key] for key in ("swath", "grid_lat", "grid_lon")}
+        context["cycles"] = [one]
+        score_jobs.append((f"Score {cycle['init_str']}", _score_cycle,
+                           ((ccase, context, bdeck_full),)))
+    report_workers(ccase.workers, len(score_jobs), "Scoring")
+    results, fss_rows, dist_rows, summary_rows = [], [], [], []
+    track_rows_by_init = {}
+    for rows, fss, dist, track, summary in ordered_map(
+            _run_stage_job, score_jobs, ccase.workers):
+        results.extend(rows)
+        fss_rows.extend(fss)
+        dist_rows.extend(dist)
+        track_rows_by_init.update(track)
+        summary_rows.extend(summary)
+
+    ccase.out_dir.mkdir(parents=True, exist_ok=True)
+    slug = ccase.output_slug
+    out_csv = ccase.out_dir / f"cycles_{slug}.csv"
+
+    fieldnames = ["init", "valid_start", "valid_end",
+                  "lead_hours_to_landfall", "forecast",
+                  "observation", "threshold", "n",
+                  "rmse", "mae", "bias_mm", "r", "a", "b", "c", "d",
+                  "ets", "bias", "pod", "far", "csi", "hss"]
+    with open(out_csv, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fieldnames)
+        w.writeheader()
+        for res in results:
+            cont = res["cont"]
+            for r in res["rows"]:
+                w.writerow({"init": res["init_str"],
+                            "valid_start": res["valid_start"].strftime(
+                                "%Y%m%d%H"),
+                            "valid_end": res["valid_end"].strftime(
+                                "%Y%m%d%H"),
+                            "lead_hours_to_landfall": hours_before_landfall(
+                                ccase, res["init_dt"]),
+                            "forecast": res["forecast"],
+                            "observation": res["observation"],
+                            "n": cont["n"], "rmse": cont["rmse"],
+                            "mae": cont["mae"], "bias_mm": cont["bias"],
+                            "r": cont["r"], **r})
+    print(f"\nSaved table: {out_csv}")
+
+    out_fss_csv = ccase.out_dir / f"cycles_fss_{slug}.csv"
+    with open(out_fss_csv, "w", newline="") as fh:
+        fieldnames = ["init", "lead_hours_to_landfall", "forecast",
+                      "observation", "threshold", "threshold_in", "scale_cells",
+                      "scale_km", "fss"]
+        writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(fss_rows)
+    print(f"Saved table: {out_fss_csv}")
+
+    out_dist_csv = ccase.out_dir / f"cycles_dist_{slug}.csv"
+    dist_fields = ["init", "source", "p50", "p90", "p95", "p99",
+                   "max_mm", "volume_km3", "wet_frac"]
+    with open(out_dist_csv, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=dist_fields)
+        writer.writeheader()
+        for row in dist_rows:
+            writer.writerow({key: _csv_value(row.get(key))
+                             for key in dist_fields})
+    print(f"Saved table: {out_dist_csv}")
+
+    if bdeck_full is not None:
+        out_track_csv = ccase.out_dir / f"cycles_track_{slug}.csv"
+        track_fields = [
+            "init", "lead_hours_to_landfall", "valid", "fhr",
+            "pos_err_km", "along_km", "cross_km", "dlat_deg", "dlon_deg",
+            "vmax_err_kt", "mslp_err_hpa",
+        ]
+        with open(out_track_csv, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=track_fields)
+            writer.writeheader()
+            for init_dt, rows in sorted(track_rows_by_init.items()):
+                for row in rows:
+                    output = {key: _csv_value(row.get(key))
+                              for key in track_fields}
+                    output["init"] = init_dt.strftime("%Y%m%d%H")
+                    output["lead_hours_to_landfall"] = _csv_value(
+                        hours_before_landfall(ccase, init_dt))
+                    output["valid"] = row["valid"].strftime("%Y%m%d%H")
+                    writer.writerow(output)
+        print(f"Saved table: {out_track_csv}")
+    else:
+        print("Best track unavailable — track CSV and plots not produced.")
+
     out_summary_csv = ccase.out_dir / f"cycles_summary_{slug}.csv"
     with open(out_summary_csv, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=SUMMARY_FIELDS,
@@ -1299,7 +1387,7 @@ def compute_cycles(ccase, fields=None, refresh_cache=False):
 
     print(f"Timing: scoring/tables {perf_counter() - scoring_started:.1f}s")
     plotting_started = perf_counter()
-    report_phase("plots/animations (sequential)")
+    report_phase("plots/animations (independent output files)")
     caveat = cycles_caveat(fields, ccase)
     print(caveat)
     out_metrics = ccase.out_dir / f"cycles_metrics_{slug}.png"
@@ -1317,71 +1405,56 @@ def compute_cycles(ccase, fields=None, refresh_cache=False):
         if obsolete_plot.exists():
             obsolete_plot.unlink()
             print(f"Removed obsolete plot: {obsolete_plot}")
-    structure_plots = [
-        (ccase.out_dir / f"cycles_dist_{slug}.png",
-         lambda path: plot_distributions(ccase, fields, path)),
-        (ccase.out_dir / f"cycles_percentiles_{slug}.png",
-         lambda path: plot_percentiles_by_cycle(ccase, summary_rows, path)),
-        (ccase.out_dir / f"cycles_pattern_r_{slug}.png",
-         lambda path: plot_pattern_r(ccase, summary_rows, path)),
+    render_jobs = [
+        (ccase.out_dir / f"cycles_dist_{slug}.png", plot_distributions,
+         (ccase, fields, ccase.out_dir / f"cycles_dist_{slug}.png"), False),
+        (ccase.out_dir / f"cycles_percentiles_{slug}.png", plot_percentiles_by_cycle,
+         (ccase, summary_rows, ccase.out_dir / f"cycles_percentiles_{slug}.png"), False),
+        (ccase.out_dir / f"cycles_pattern_r_{slug}.png", plot_pattern_r,
+         (ccase, summary_rows, ccase.out_dir / f"cycles_pattern_r_{slug}.png"), False),
+        (out_metrics, plot_metrics, (ccase, results, out_metrics, caveat), False),
+        (out_ets_leadtime, plot_ets_leadtime, (ccase, results, out_ets_leadtime), False),
+        (out_ets_bars, plot_ets_threshold_bars, (ccase, results, out_ets_bars), False),
+        (out_fss_leadtime, plot_fss_leadtime, (ccase, fss_rows, out_fss_leadtime), False),
     ]
-    for path, plotter in structure_plots:
-        if plotter(path):
-            print(f"Saved plot : {path}")
-        else:
-            print(f"Skipped plot: {path.name} (no finite data)")
-    plot_metrics(ccase, results, out_metrics, caveat=caveat)
-    print(f"Saved plot : {out_metrics}")
-    plot_ets_leadtime(ccase, results, out_ets_leadtime)
-    print(f"Saved plot : {out_ets_leadtime}")
-    plot_ets_threshold_bars(ccase, results, out_ets_bars)
-    print(f"Saved plot : {out_ets_bars}")
-    plot_fss_leadtime(ccase, fss_rows, out_fss_leadtime)
-    print(f"Saved plot : {out_fss_leadtime}")
     if bdeck_full is not None and track_rows_by_init:
-        out_track_plot = ccase.out_dir / f"cycles_track_error_{slug}.png"
-        plot_track_error(track_rows_by_init, ccase, out_track_plot)
-        print(f"Saved plot : {out_track_plot}")
+        path = ccase.out_dir / f"cycles_track_error_{slug}.png"
+        render_jobs.append((path, plot_track_error, (track_rows_by_init, ccase, path), False))
     if bdeck_full is not None:
-        out_shifted_plot = ccase.out_dir / f"cycles_shifted_ets_{slug}.png"
-        out_track_precip = ccase.out_dir / f"cycles_track_precip_{slug}.png"
-        plot_shifted_skill(summary_rows, ccase, out_shifted_plot)
-        print(f"Saved plot : {out_shifted_plot}")
-        plot_track_precip(summary_rows, ccase, out_track_precip)
-        print(f"Saved plot : {out_track_precip}")
+        for name, function in [("shifted_ets", plot_shifted_skill),
+                               ("track_precip", plot_track_precip)]:
+            path = ccase.out_dir / f"cycles_{name}_{slug}.png"
+            render_jobs.append((path, function, (summary_rows, ccase, path), False))
     if ccase.make_animation:
-        animations = [
-            (ccase.out_dir / f"cycles_qpf_{slug}.gif",
-             animate_cycle_qpf),
-            (ccase.out_dir / f"cycles_difference_{slug}.gif",
-             animate_cycle_difference),
-            (ccase.out_dir / f"cycles_observed_{slug}.gif",
-             animate_cycle_observed),
-        ]
-        for out_animation, animator in animations:
+        animation_ready = True
+        if worker_count(ccase.workers, 3) > 1:
+            # Resolve shared Natural Earth downloads once before GIF workers
+            # can race to populate the same Cartopy cache files.
             try:
-                animator(ccase, fields, out_animation)
+                _prepare_map_features(ccase)
             except (ImportError, RuntimeError) as exc:
-                print(f"Animation unavailable ({out_animation.name}): {exc}")
-            else:
-                print(f"Saved movie: {out_animation}")
+                print(f"Animations unavailable (map assets): {exc}")
+                animation_ready = False
+        animations = [("qpf", animate_cycle_qpf),
+                      ("difference", animate_cycle_difference),
+                      ("observed", animate_cycle_observed)]
+        for name, animator in animations if animation_ready else []:
+            path = ccase.out_dir / f"cycles_{name}_{slug}.gif"
+            render_jobs.append((path, animator, (ccase, fields, path), True))
+    report_workers(ccase.workers, len(render_jobs), "Plots/animations")
+    for message in ordered_map(_render_product, render_jobs, ccase.workers):
+        print(message, flush=True)
 
     print(f"Timing: plots/animations {perf_counter() - plotting_started:.1f}s")
     if ccase.ml_features:
-        report_phase("ML features (sequential)")
+        report_phase("ML features (per-cycle jobs; CSV append in parent)")
         features_started = perf_counter()
         try:
-            from ml_features import append_features, extract_cycle_features
-            feature_rows = []
-            for cyc, summary_row in zip(fields["cycles"], summary_rows):
-                case = cyc.get("_case")
-                if case is None:
-                    try:
-                        case = cycle_storm_case(ccase, cyc["init_str"])
-                    except Exception as exc:
-                        print(f"  feature case {cyc['init_str']}: {exc}")
-                feature_rows.append(extract_cycle_features(
-                    ccase, case, cyc, summary_row, bdeck_full))
+            from ml_features import append_features
+            feature_jobs = [(ccase, cyc, summary_row, bdeck_full)
+                            for cyc, summary_row in zip(fields["cycles"], summary_rows)]
+            report_workers(ccase.workers, len(feature_jobs), "ML features")
+            feature_rows = list(ordered_map(_extract_features, feature_jobs, ccase.workers))
             append_features(feature_rows, ccase.ml_features_csv)
             print(f"features: appended {len(feature_rows)} rows to "
                   f"{ccase.ml_features_csv}")

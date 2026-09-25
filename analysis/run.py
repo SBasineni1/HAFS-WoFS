@@ -30,7 +30,8 @@ def parse_options(argv):
     parser.add_argument("yaml_path")
     parser.add_argument("command", nargs="?", choices=COMMANDS, default="all")
     parser.add_argument("--workers", type=positive_workers,
-                        help="cycles: forecast extraction processes (overrides YAML)")
+                        help="cycles: processes for extraction, observations, scoring, "
+                             "rendering and features (overrides YAML)")
     parser.add_argument("--replot", action="store_true",
                         help="cycles: redraw table-based plots from existing CSVs")
     parser.add_argument("--refresh-cache", action="store_true",

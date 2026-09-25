@@ -2,9 +2,12 @@
 
 import os
 import socket
+import sys
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from multiprocessing import get_context
+from time import perf_counter
 
 
 def positive_workers(value):
@@ -48,17 +51,18 @@ def report_runtime(requested):
         print("Runtime: running outside a Slurm allocation. --workers does not "
               "request compute-node CPUs. On Hercules, submit with "
               "sbatch analysis/cycles.sbatch <case.yaml>.", flush=True)
-    print("Runtime: only parent extraction uses the process pool; discovery, "
-          "observations, scoring, plots and ML features run sequentially.",
+    print("Runtime: process pools handle parent extraction, independent "
+          "observation sources, per-cycle scoring, plots/GIFs and ML features. "
+          "Discovery and shared table writes run in the parent.",
           flush=True)
 
 
-def report_workers(requested, jobs):
+def report_workers(requested, jobs, stage="Parent extraction"):
     count = worker_count(requested, jobs)
-    print(f"Parent extraction: {count} worker(s) "
-          f"(requested={requested}, eligible cycles={jobs})", flush=True)
+    print(f"{stage}: {count} worker(s) "
+          f"(requested={requested}, jobs={jobs})", flush=True)
     if count < requested:
-        print("Worker count reduced by eligible cycles, CPU affinity, or the "
+        print("Worker count reduced by available jobs, CPU affinity, or the "
               "Slurm CPUs-per-task limit. Check the Runtime lines above.",
               flush=True)
 
@@ -66,6 +70,22 @@ def report_workers(requested, jobs):
 def report_phase(name):
     """Flush before work starts, including when stdout is redirected."""
     print(f"Phase: {name}", flush=True)
+
+
+def run_stage_job(job):
+    """Run a picklable stage with an explicit PID and elapsed time."""
+    label, function, args = job
+    print(f"  {label}: started pid={os.getpid()}", flush=True)
+    started = perf_counter()
+    result = function(*args)
+    print(f"Timing: {label} {perf_counter() - started:.1f}s", flush=True)
+    return result
+
+
+def _configure_child():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(line_buffering=True)
 
 
 @contextmanager
@@ -99,5 +119,20 @@ def ordered_map(function, jobs, workers=1):
         return
     with _single_threaded_children():
         with ProcessPoolExecutor(max_workers=count,
-                                 mp_context=get_context("spawn")) as pool:
-            yield from pool.map(function, jobs, chunksize=1)
+                                 mp_context=get_context("spawn"),
+                                 initializer=_configure_child) as pool:
+            # Keep at most count large array jobs/results in flight. This also
+            # works on Python versions before Executor.map gained buffersize.
+            pending = deque()
+            remaining = iter(jobs)
+            for _ in range(count):
+                pending.append(pool.submit(function, next(remaining)))
+            while pending:
+                result = pending.popleft().result()
+                yield result
+                del result
+                try:
+                    job = next(remaining)
+                except StopIteration:
+                    continue
+                pending.append(pool.submit(function, job))

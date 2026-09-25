@@ -153,17 +153,17 @@ thresholds/scales.
 
 ### Faster cycle runs and reruns
 
-Use multiple CPU processes for parent GRIB extraction and interpolation:
+Use multiple CPU processes throughout the cycles pipeline:
 
 ```bash
 python analysis/run.py storms/helene_hfsa_cycles.yaml cycles --workers 4
 ```
 
 The default is one worker. You can persist the setting with `workers: 4` in
-the cycles YAML; the CLI overrides it. Workers are capped by the number of
-cycles, CPU affinity where available, and `SLURM_CPUS_PER_TASK` in a Slurm
+the cycles YAML; the CLI overrides it. Workers are capped by each phase's job
+count, CPU affinity where available, and `SLURM_CPUS_PER_TASK` in a Slurm
 allocation. A Slurm job without an explicit CPU-per-task allocation uses one
-worker. This is a single-node process pool; requesting more nodes does not
+worker. This uses single-node process pools; requesting more nodes does not
 speed it up. Child processes use one native numerical-library thread each.
 
 On Orion/Hercules, request the CPUs for **one task** in your batch script
@@ -205,16 +205,36 @@ background shell process: the number from `jobs -l` is a PID, not a Slurm job
 ID, and running it on `hercules-login-*` does not allocate a compute node.
 
 The log now identifies the host, PID, Slurm job, CPU affinity, requested and
-effective worker counts, and the start of each phase. Parent tasks print their
-PIDs. The pool exits before observations/scoring/plotting, so seeing no child
-processes during those phases is expected. Redirected CLI logs are line-buffered;
+effective worker counts, and the start of each phase. Tasks print their PIDs.
+Each phase finishes its pool before the next begins, avoiding nested pools.
+Redirected CLI logs are line-buffered;
 `tail -f` shows progress without waiting for the output buffer to fill.
 
 Start with 2–4 workers on an allocated compute node and check peak memory:
 each worker decodes native forecast grids and builds interpolation structures.
-Large HAFS-M grids may need fewer workers or more allocated memory. Plotting,
-scoring, and observation processing remain sequential, so total speedup will
-depend on which phase dominates. No new Python dependencies are required.
+Large HAFS-M grids may need fewer workers or more allocated memory. Parallel
+rendering also keeps a copy of its input fields and figure/GIF frames in each
+active worker. No new Python dependencies are required.
+
+The worker setting applies to these phases, including the first uncached run:
+
+- Parent extraction: one job per eligible initialization.
+- Observations: MRMS and Stage IV run concurrently, using at most two workers.
+  Each source retains a single owner for its downloads and native accumulation.
+  MRMS still decodes each shared hour once; Stage IV still reuses native totals
+  and its interpolation mesh across cycles.
+- Scoring: one job per cycle computes precipitation, FSS, distribution, track,
+  object, and shifted scores. Results are collected in the original cycle order.
+- Rendering: independent PNGs and GIFs run in separate processes. Map assets
+  are prepared once before parallel GIF rendering to avoid download races.
+- ML features: independent cycle feature extraction runs in separate processes.
+
+Discovery and shared CSV writes remain in the parent process. The worker
+limit is a maximum, not a promise that every core stays busy: observations have
+only two source jobs, and one can finish before the other. Pools retain at most
+one submitted job per worker, bounding queued array/result copies. For short or
+already cached runs, process startup and data transfer can outweigh the benefit;
+use `--workers 1` for the serial path and compare the printed phase timings.
 
 Several optimizations apply even with one worker:
 

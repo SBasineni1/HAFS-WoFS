@@ -19,7 +19,7 @@ def test_runtime_distinguishes_pid_from_slurm_job(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert f"pid={os.getpid()} Slurm job=none" in output
     assert "outside a Slurm allocation" in output
-    assert "only parent extraction" in output
+    assert "independent observation sources" in output
 
 
 def test_slurm_default_cap_is_explained(monkeypatch, capsys):
