@@ -24,6 +24,23 @@ COMMANDS = ("parent", "ets", "rmse", "cycles", "cycles-compare", "all",
             "compare", "replot", "ml")
 
 
+def init_list(value):
+    """Comma-separated YYYYMMDDHH initializations for --inits."""
+    from datetime import datetime
+    inits = [item.strip() for item in value.split(",") if item.strip()]
+    try:
+        for init in inits:
+            if len(init) != 10:
+                raise ValueError
+            datetime.strptime(init, "%Y%m%d%H")
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected comma-separated YYYYMMDDHH inits, got {value!r}")
+    if not inits:
+        raise argparse.ArgumentTypeError("--inits needs at least one init")
+    return inits
+
+
 def parse_options(argv):
     from parallel import positive_workers
     parser = argparse.ArgumentParser(description=__doc__)
@@ -40,13 +57,49 @@ def parse_options(argv):
                         help="cycles: skip GIF rendering")
     parser.add_argument("--no-ml-features", action="store_true",
                         help="cycles: skip optional environmental feature extraction")
+    parser.add_argument("--inits", type=init_list,
+                        help="cycles: only these inits, e.g. 2024092400,2024092412 "
+                             "(overrides YAML/auto-discovery)")
+    parser.add_argument("--max-inits", type=positive_workers,
+                        help="cycles: keep N eligible inits spread first..last")
+    parser.add_argument("--quick", action="store_true",
+                        help="cycles: fast test run - 2 inits unless --inits/"
+                             "--max-inits, no GIFs/ML features, output in out_dir/quick")
     args = parser.parse_args(argv)
     if args.command != "cycles" and any((args.workers is not None, args.replot,
-            args.refresh_cache, args.no_animation, args.no_ml_features)):
+            args.refresh_cache, args.no_animation, args.no_ml_features,
+            args.inits, args.max_inits, args.quick)):
         parser.error("runtime options apply to the cycles command only")
-    if args.replot and (args.workers is not None or args.refresh_cache):
-        parser.error("--replot uses CSVs; --workers/--refresh-cache require computation")
+    if args.replot and (args.workers is not None or args.refresh_cache
+                        or args.inits or args.max_inits):
+        parser.error("--replot uses CSVs; --workers/--refresh-cache/--inits/"
+                     "--max-inits require computation")
     return args
+
+
+QUICK_MAX_INITS = 2
+
+
+def apply_cycles_options(ccase, args):
+    """Apply cycles CLI overrides to a loaded CyclesCase."""
+    if args.workers is not None:
+        ccase.workers = args.workers
+    if args.no_animation:
+        ccase.make_animation = False
+    if args.no_ml_features:
+        ccase.ml_features = False
+    if args.inits:
+        ccase.inits = args.inits
+    if args.max_inits is not None:
+        ccase.max_inits = args.max_inits
+    if args.quick:
+        if not args.inits and ccase.max_inits is None:
+            ccase.max_inits = QUICK_MAX_INITS
+        ccase.make_animation = False
+        ccase.ml_features = False  # keep test rows out of ml_features.csv
+        # Separate tables keep cycles-compare on full runs; the parent-grid
+        # cache stays shared, so quick-run inits are reused by the full run.
+        ccase.out_dir = ccase.out_dir / "quick"
 
 
 def parse_args(argv):
@@ -108,12 +161,7 @@ def main(argv):
         from hafs_case import cycles_from_yaml
         from cycles import compute_cycles, replot_cycles_from_csv
         ccase = cycles_from_yaml(yaml_path)
-        if args.workers is not None:
-            ccase.workers = args.workers
-        if args.no_animation:
-            ccase.make_animation = False
-        if args.no_ml_features:
-            ccase.ml_features = False
+        apply_cycles_options(ccase, args)
         print(f"Case   : {ccase.storm_name} ({ccase.model_label})")
         print(f"Window : {ccase.valid_start:%Y-%m-%d %HZ} -> "
               f"{ccase.valid_end:%Y-%m-%d %HZ}  | run_root: {ccase.run_root}")

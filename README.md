@@ -278,6 +278,27 @@ are `make_animation: false` and `ml_features: false`. Runs print elapsed times
 for parent extraction, MRMS, Stage IV, scoring/tables, plots/animations, and
 the entire command so you can identify the next bottleneck.
 
+For a fast test run on a subset of the data:
+
+```bash
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles --quick
+# Pick the inits yourself, or keep N spread across the eligible ones:
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles --quick \
+  --inits 2024092400,2024092512
+python analysis/run.py storms/helene_hfsa_cycles.yaml cycles --quick --max-inits 3
+```
+
+`--quick` keeps two eligible inits (the first and last), skips GIFs and ML
+features, and writes to `out_dir/quick/` so `cycles-compare` and
+`ml_features.csv` only ever see full runs. The parent-grid cache stays at
+`out_dir/.field_cache`, so the inits a quick run extracts are reused by the
+next full run. Subsetting happens after eligibility checks, so every kept init
+reaches `valid_end`. `--inits` and `--max-inits` also work without `--quick`
+(YAML: `inits:`, `max_inits:`). It works with `sbatch analysis/cycles.sbatch
+<case.yaml> --quick`, and `--replot --quick` redraws the quick tables. A
+coarser `grid_res` in a copy of the YAML speeds scoring further, but FSS scales
+are in grid cells, so those scores are not comparable to a 0.05° run.
+
 For plot styling changes, redraw directly from existing cycle CSVs:
 
 ```bash

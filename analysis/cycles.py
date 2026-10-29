@@ -242,6 +242,16 @@ def _build_stage4_observations(ccase, windows, grid_lat, grid_lon):
     return output
 
 
+def subset_evenly(items, count):
+    """Keep ``count`` items spread across the list, always first and last."""
+    if count is None or len(items) <= count:
+        return list(items)
+    if count == 1:
+        return [items[-1]]  # latest init: shortest window, fastest to run
+    indices = np.round(np.linspace(0, len(items) - 1, count)).astype(int)
+    return [items[i] for i in indices]
+
+
 def build_cycle_fields(ccase, refresh_cache=False):
     """Build everything the cycles product scores and plots.
 
@@ -288,6 +298,12 @@ def build_cycle_fields(ccase, refresh_cache=False):
             f"No eligible cycles for window "
             f"{ccase.valid_start:%Y%m%d%H}->{ccase.valid_end:%Y%m%d%H} "
             f"(inspected: {', '.join(init_strs)})")
+    if ccase.max_inits is not None and len(cases) > ccase.max_inits:
+        kept = subset_evenly(cases, ccase.max_inits)
+        print(f"  max_inits={ccase.max_inits}: keeping "
+              f"{', '.join(c.init_str for c in kept)} of {len(cases)} "
+              f"eligible cycles")
+        cases = kept
 
     # Per-cycle forecast windows.
     cycles = []
@@ -301,7 +317,7 @@ def build_cycle_fields(ccase, refresh_cache=False):
         print(f"\nCycle {case.init_str} (valid {effective_start:%Y-%m-%d %HZ}"
               f" -> {ccase.valid_end:%Y-%m-%d %HZ}; f{f1:03d}-f{f2:03d})")
         jobs.append((case, f1, f2, grid_lat, grid_lon,
-                     ccase.out_dir / ".field_cache" if ccase.cache_fields else None,
+                     ccase.field_cache_dir if ccase.cache_fields else None,
                      refresh_cache))
     report_phase("parent extraction (process pool when effective workers > 1)")
     report_workers(ccase.workers, len(jobs))

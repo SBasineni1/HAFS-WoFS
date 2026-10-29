@@ -426,10 +426,16 @@ class CyclesCase:
     ml_features: bool = True
     ml_features_csv: Path = field(default_factory=lambda: (
         Path(__file__).resolve().parent / "output" / "ml_features.csv"))
+    max_inits: int = None  # keep N eligible inits, spread first..last
+    field_cache_dir: Path = None  # default out_dir/.field_cache
 
     def __post_init__(self):
         from parallel import positive_workers
         self.workers = positive_workers(self.workers)
+        if self.max_inits is not None:
+            self.max_inits = positive_workers(self.max_inits)
+        if self.field_cache_dir is None:
+            self.field_cache_dir = Path(self.out_dir) / ".field_cache"
         if self.object_threshold_mm is None:
             self.object_threshold_mm = self.ets_threshold_mm
 
@@ -564,6 +570,7 @@ def cycles_from_yaml(yaml_path):
                          if cfg.get("ml_features_csv") else
                          Path(__file__).resolve().parent / "output" /
                          "ml_features.csv"),
+        max_inits=cfg.get("max_inits"),
     )
 
 

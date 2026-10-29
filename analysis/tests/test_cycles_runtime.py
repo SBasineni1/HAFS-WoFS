@@ -270,3 +270,75 @@ def test_replot_command_routes_cycles_yaml_without_run_root(tmp_path, monkeypatc
     with patch.object(cycles, "replot_cycles_from_csv") as replot:
         run.main([str(config), "replot"])
         assert replot.call_count == 1
+
+
+def test_subset_inits_keeps_first_and_last_eligible():
+    items = list("abcdefg")
+    assert cycles.subset_evenly(items, 2) == ["a", "g"]
+    assert cycles.subset_evenly(items, 3) == ["a", "d", "g"]
+    assert cycles.subset_evenly(items, 10) == items
+    assert cycles.subset_evenly(items, None) == items
+
+
+def test_max_inits_subsets_after_eligibility(tmp_path, monkeypatch):
+    import dataclasses
+    ccase = _tiny_cycles_case(tmp_path, tmp_path)
+    # 2024092300 cannot reach valid_end, so it must not count toward the cap.
+    ccase.inits = ["2024092300", "2024092400", "2024092412", "2024092500",
+                   "2024092512"]
+    ccase.max_inits = 2
+
+    def fake_case(_ccase, init_str):
+        return dataclasses.replace(
+            _stub_case(tmp_path), init_str=init_str,
+            init_dt=datetime.strptime(init_str, "%Y%m%d%H"))
+
+    grid = np.zeros(ccase.fixed_grid()[0].shape)
+    monkeypatch.setattr(cycles, "cycle_storm_case", fake_case)
+    monkeypatch.setattr(cycles, "discover_files", lambda *args:
+                        [(96, Path("parent.f096.grb2"))])
+    monkeypatch.setattr(cycles, "parent_window_total",
+                        lambda *args: np.ones_like(grid))
+    monkeypatch.setattr(cycles, "build_mrms_total_window",
+                        lambda *args: np.zeros_like(grid))
+    monkeypatch.setattr(cycles, "stage4_total_window",
+                        lambda *args: (None, None, None, None))
+    ccase.cache_fields = False
+    fields = cycles.build_cycle_fields(ccase)
+    assert [c["init_str"] for c in fields["cycles"]] == ["2024092400",
+                                                         "2024092512"]
+
+
+def test_quick_option_writes_aside_and_shares_parent_cache(tmp_path):
+    ccase = _tiny_cycles_case(tmp_path, tmp_path / "out")
+    ccase.make_animation = ccase.ml_features = True
+    cache_dir = ccase.field_cache_dir
+    assert cache_dir == tmp_path / "out" / ".field_cache"
+    run.apply_cycles_options(ccase, run.parse_options(
+        ["case.yaml", "cycles", "--quick"]))
+    assert ccase.out_dir == tmp_path / "out" / "quick"
+    assert ccase.field_cache_dir == cache_dir
+    assert ccase.max_inits == 2
+    assert not ccase.make_animation and not ccase.ml_features
+
+
+def test_inits_and_max_inits_options():
+    ccase = _tiny_cycles_case("/tmp", "/tmp/out")
+    run.apply_cycles_options(ccase, run.parse_options(
+        ["case.yaml", "cycles", "--inits", "2024092400,2024092412",
+         "--quick"]))
+    # Explicit inits are not capped further by --quick.
+    assert ccase.inits == ["2024092400", "2024092412"]
+    assert ccase.max_inits is None
+    ccase = _tiny_cycles_case("/tmp", "/tmp/out")
+    run.apply_cycles_options(ccase, run.parse_options(
+        ["case.yaml", "cycles", "--max-inits", "3", "--quick"]))
+    assert ccase.max_inits == 3
+    with pytest.raises(SystemExit):
+        run.parse_options(["case.yaml", "cycles", "--inits", "20240924"])
+    with pytest.raises(SystemExit):
+        run.parse_options(["case.yaml", "compare", "--quick"])
+    with pytest.raises(SystemExit):
+        run.parse_options(["case.yaml", "cycles", "--replot", "--max-inits", "2"])
+    # --replot --quick redraws the quick run's tables.
+    assert run.parse_options(["case.yaml", "cycles", "--replot", "--quick"]).quick
